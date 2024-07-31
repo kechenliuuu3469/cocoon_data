@@ -12,5 +12,5 @@ setup(
     author="Zachary Huang",
     author_email="zh2408@columbia.edu",
     description="Cocoon is an open-source project that aims to free analysts from tedious data transformations with LLM.",
-    url="https://github.com/Cocoon-Data-Transformation/cocoon/",
+    url="https://github.com/kechenliuuu3469/cocoon_data.git",
 )
