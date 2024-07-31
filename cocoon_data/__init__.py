@@ -32,21 +32,22 @@ import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from datasketch import MinHash, MinHashLSH
 from bs4 import BeautifulSoup
-import time
-from collections import OrderedDict
-import warnings
 
-from .database import *
-from .llm import *
-from .utils import *
-from .extract import *
-from .viz import *
-from .constant import *
-from .data_type import *
-from .widgets import *
+
+
+from cocoon_data.database import *
+from cocoon_data.llm import *
+from cocoon_data.utils import *
+from cocoon_data.extract import *
+from cocoon_data.viz import *
+from cocoon_data.constant import *
+from cocoon_data.data_type import *
+from cocoon_data.widgets import *
 
 
 try:
+    import openpyxl
+    import xlrd
     from pyproj import Transformer, CRS
     from rasterio.windows import from_bounds
     from rasterio.features import rasterize
@@ -56,6 +57,7 @@ try:
     from shapely.geometry import Polygon
     from shapely.ops import transform
     from rasterio.transform import array_bounds
+    import scipy
 except:
     pass
 
@@ -66,10 +68,6 @@ LOG_MESSAGE_HISTORY = False
 DEBUG_MODE = False
 cocoon_comment_start = "-- COCOON BLOCK START: PLEASE DO NOT MODIFY THIS BLOCK FOR SELF-MAINTENANCE\n"
 cocoon_comment_end = "-- COCOON BLOCK END\n"
-sys.setrecursionlimit(50000)
-
-if not DEBUG_MODE:
-    warnings.filterwarnings("ignore")
 
 def yml_from_name(table_name):
 
@@ -82,79 +80,50 @@ def yml_from_name(table_name):
 
     return yaml_dict
 
+
 class QueryWidget:
     def __init__(self, con):
         self.con = con
         self.tables = get_table_names(con)
         database_name = get_database_name(con)
         
-        table_label = widgets.HTML(value=f"<b>Database</b>: {database_name}, <b>Tables</b>:")
-        table_dropdown = widgets.Dropdown(
-            options=self.tables,
-            value=self.tables[0] if self.tables else None,
-            layout=widgets.Layout(width='150px')
-        )
-        table_dropdown.observe(self.on_table_change, names='value')
-        self.dropdown_label = HBox([table_label, table_dropdown])
-        
         if self.tables:
+            table_label = widgets.HTML(value=f"<b>Database</b>: {database_name}, <b>Tables</b>:")
+            table_dropdown = widgets.Dropdown(
+                options=self.tables,
+                value=self.tables[0],
+                layout=widgets.Layout(width='150px')
+            )
+            table_dropdown.observe(self.on_table_change, names='value')
+            self.dropdown_label = HBox([table_label, table_dropdown])
             self.sql_input = widgets.Textarea(value=f'SELECT * FROM "{self.tables[0]}"',
                                               disabled=False,
                                               layout={'width': '96%', 'height': '100px'})
         else:
-            self.sql_input = widgets.Textarea(value='SELECT * FROM "your_table_name"',
+            self.dropdown_label = widgets.HTML(value="There are no tables in your database.")
+            self.sql_input = widgets.Textarea(value='SELECT * FROM your_table_name',
                                               disabled=False,
                                               layout={'width': '96%', 'height': '100px'})
-        
-        self.sql_label = widgets.HTML(value="<b>Your query:</b>")
-        self.sql_input.add_class('modern-textarea')
-        
-        self.context_label = widgets.HTML(value='<b>Cocoon WITH context:</b>')
-        self.with_context = widgets.Textarea(value='',
-                                              disabled=True,
-                                              layout={'width': '96%', 'height': '100px'})
-        
-        self.with_context.add_class('modern-textarea')
         
         self.error_msg = widgets.HTML(value='')
         self.result_display = widgets.HTML(layout=widgets.Layout(max_width='96%', overflow='auto'))
         self.submit_button = widgets.Button(description="Submit Query", button_style='success', icon='check')
-        
         layout = Layout(display='flex', justify_content='space-between', width='96%')
 
         database_and_submit = HBox([self.dropdown_label, self.submit_button], layout=layout)
-    
-        self.vbox = widgets.VBox([self.context_label, self.with_context, self.sql_label, self.sql_input, database_and_submit, self.error_msg, self.result_display])
+
+        self.vbox = widgets.VBox([self.sql_input, database_and_submit, self.error_msg, self.result_display])
         self.submit_button.on_click(self.run_query_from_button)
-        
-        self.update_context_visibility()
-    
-    def update_context_value(self, context_value=""):
-        self.with_context.value = context_value
-        self.update_context_visibility()
-    
-    def update_context_visibility(self):
-        if self.with_context.value.strip() == '':
-            self.context_label.layout.display = 'none'
-            self.with_context.layout.display = 'none'
-        else:
-            self.context_label.layout.display = ''
-            self.with_context.layout.display = ''
-            
+   
     def on_table_change(self, change):
         selected_table = change['new']
         self.sql_input.value = f'SELECT * FROM "{selected_table}"'
-        self.update_context_value()
         self.run_query_from_button(None)
    
     def run_query(self, sql_query):
         sample_size = 100
         self.sql_input.value = sql_query
-        wit_context = self.with_context.value
-        
-        sql_query = sql_query.strip().rstrip(';')
-        
-        modified_query = f"{wit_context} \n SELECT * FROM ({sql_query}) LIMIT {sample_size}"
+        modified_query = f"SELECT * FROM ({sql_query}) LIMIT {sample_size}"
         try:
             result = run_sql_return_df(self.con, modified_query)
             self.error_msg.value = f"<div style='color: green;'>The query was successful. We only show the first {sample_size} rows.</div>"
@@ -230,12 +199,12 @@ def generate_draggable_graph_html_dynamically(graph_data):
     number_nodes = len(graph_data["nodes"])
     svg_width = min(800, 300 + 50 * number_nodes)
     svg_height = 100 + number_nodes * 30
-    return svg_width, svg_height, generate_draggable_graph_html_color(graph_data, svg_height, svg_width)
+    return svg_width, svg_height, generate_draggable_graph_html(graph_data, svg_height, svg_width)
 
 
 def display_draggable_graph_html(graph_data):
     _, svg_height, html_content = generate_draggable_graph_html_dynamically(graph_data)
-    display_html_iframe(html_content, width="100%", height=f"{svg_height+20}px")
+    display_html_iframe(html_content, width="100%", height=f"{svg_height+50}px")
 
 def cluster_tables(tables, threshold=0.5, num_perm=128):
 
@@ -2501,6 +2470,40 @@ class DocumentedData:
 
         self.document = {}
         self.stats = collect_df_statistics(self)
+        self.document["database_documentation"] = """
+About Dataset:
+Netflix stands as a leading force in the realm of media and video streaming. With a staggering array of over 8,000 movies and TV shows accessible on their platform, as of mid-2021, their global subscriber count exceeds 200 million. This tabulated dataset comprehensively catalogues all offerings on Netflix, including vital details such as cast, directors, ratings, release year, duration, and more.
+
+Dataset Overview:
+The Netflix Titles dataset is a comprehensive compilation of movies and TV shows available on Netflix, covering various aspects such as the title type, director, cast, country of production, release year, rating, duration, genres (listed in), and a brief description. This dataset is instrumental for analyzing trends in Netflix content, understanding genre popularity, and examining the distribution of content across different regions and time periods.
+
+Key Details:
+Total Entries: The dataset contains 8,809 entries, each representing a unique movie or TV show.
+Columns: There are 12 columns in the dataset:
+- show_id: A unique identifier for each title.
+- type: The category of the title, which is either 'Movie' or 'TV Show'.
+- title: The name of the movie or TV show.
+- director: The director(s) of the movie or TV show. (Contains null values for some entries, especially TV shows where this information might not be applicable.)
+- cast: The list of main actors/actresses in the title. (Some entries might not have this information.)
+- country: The country or countries where the movie or TV show was produced.
+- date_added: The date the title was added to Netflix.
+- release_year: The year the movie or TV show was originally released.
+- rating: The age rating of the title.
+- duration: The duration of the title, in minutes for movies and seasons for TV shows.
+- listed_in: The genres the title falls under.
+- description: A brief summary of the title.
+
+Potential Use Cases:
+- Content Analysis: This dataset can be used to perform detailed content analysis, such as genre popularity over time, distribution of content production across different countries, and trends in movie versus TV show production.
+- Recommendation Systems: For developers and data scientists working on recommendation systems, this dataset provides a rich source of metadata for content similarity and user preference modeling.
+- Market Analysis: Market researchers can utilize this dataset to analyze Netflix's content strategy, including their focus on international markets, genre diversification, and investment in original content.
+
+Whether you are a data enthusiast, a content creator, or a market analyst, the Netflix Titles dataset offers valuable insights into the evolving landscape of digital content. Explore this dataset to uncover trends, patterns, and opportunities in the world of streaming entertainment.
+
+If you find the dataset intriguing, please consider upvoting. Thank you.
+"""
+
+        
 
         idx = 1
         column_desc = ""
@@ -4166,12 +4169,45 @@ Conclude with the final result as a multi-level JSON. Make sure all attributes a
         progress = self.show_progress(1)
 
         meanings = self.document["column_meaning"]["summary"]
+        database_docs = self.document.get("database_documentation", """
+About Dataset:
+Netflix stands as a leading force in the realm of media and video streaming. With a staggering array of over 8,000 movies and TV shows accessible on their platform, as of mid-2021, their global subscriber count exceeds 200 million. This tabulated dataset comprehensively catalogues all offerings on Netflix, including vital details such as cast, directors, ratings, release year, duration, and more.
+
+Dataset Overview:
+The Netflix Titles dataset is a comprehensive compilation of movies and TV shows available on Netflix, covering various aspects such as the title type, director, cast, country of production, release year, rating, duration, genres (listed in), and a brief description. This dataset is instrumental for analyzing trends in Netflix content, understanding genre popularity, and examining the distribution of content across different regions and time periods.
+
+Key Details:
+Total Entries: The dataset contains 8,809 entries, each representing a unique movie or TV show.
+Columns: There are 12 columns in the dataset:
+- show_id: A unique identifier for each title.
+- type: The category of the title, which is either 'Movie' or 'TV Show'.
+- title: The name of the movie or TV show.
+- director: The director(s) of the movie or TV show. (Contains null values for some entries, especially TV shows where this information might not be applicable.)
+- cast: The list of main actors/actresses in the title. (Some entries might not have this information.)
+- country: The country or countries where the movie or TV show was produced.
+- date_added: The date the title was added to Netflix.
+- release_year: The year the movie or TV show was originally released.
+- rating: The age rating of the title.
+- duration: The duration of the title, in minutes for movies and seasons for TV shows.
+- listed_in: The genres the title falls under.
+- description: A brief summary of the title.
+
+Potential Use Cases:
+- Content Analysis: This dataset can be used to perform detailed content analysis, such as genre popularity over time, distribution of content production across different countries, and trends in movie versus TV show production.
+- Recommendation Systems: For developers and data scientists working on recommendation systems, this dataset provides a rich source of metadata for content similarity and user preference modeling.
+- Market Analysis: Market researchers can utilize this dataset to analyze Netflix's content strategy, including their focus on international markets, genre diversification, and investment in original content.
+
+Whether you are a data enthusiast, a content creator, or a market analyst, the Netflix Titles dataset offers valuable insights into the evolving landscape of digital content. Explore this dataset to uncover trends, patterns, and opportunities in the world of streaming entertainment.
+
+If you find the dataset intriguing, please consider upvoting. Thank you.
+"""
+)
 
         max_trials = 3
 
         while max_trials > 0:
             try:
-                json_code, messages = get_rename(meanings)
+                json_code, messages = get_rename(meanings,database_docs)
                 progress.value += 1
                 break
                 
@@ -4183,18 +4219,11 @@ Conclude with the final result as a multi-level JSON. Make sure all attributes a
                     raise e
                 continue
 
-
-
-
-
-
-        
-
         self.document["rename_column"]["summary"] = json_code
         if LOG_MESSAGE_HISTORY:
             self.document["rename_column"]["history"] = messages
 
-        next_step()                                    
+        next_step()                                
 
     def get_column_meaning(self, overwrite=False, once=False):
         next_step = self.rename_column
@@ -7895,25 +7924,14 @@ def replace_nan(df):
     return df
 
 def embed_string(string, engine=None):
-    max_retries = 3
-    retry_count = 0
-    last_exception = None
 
-    while retry_count < max_retries:
-        try:
-            response = call_embed(string)
-            embeddings = response['data'][0]['embedding']
-            return embeddings
-        except Exception as e:
-            retry_count += 1
-            print(f"Retry {retry_count}: An error occurred while embedding: {e}")
-            last_exception = e
-            
-            if retry_count < max_retries:
-                print(f"Waiting for 3 seconds before retrying...")
-                time.sleep(3)
-
-    raise last_exception
+    try:
+        response = call_embed(string)
+        embeddings = response['data'][0]['embedding']
+        return embeddings
+    except Exception as e:
+        print(f"An error occurred while embedding: {e}")
+        return None
 
 def initialize_output_csv(df, output_csv_address, label='label'):
     try:
@@ -7937,12 +7955,10 @@ def find_first_nan_index(df, column_name):
     else:
         return None
 
-def embed_labels(df, output_csv_address, chunk_size=1000, 
-                 label='label', embedding_col='embedding'):
+def embed_labels(df, output_csv_address, chunk_size=1000, label='label'):
     df_output = initialize_output_csv(df, output_csv_address, label='label')
-    df[embedding_col] = df[embedding_col].astype('object')
-    
-    start_index = find_first_nan_index(df_output, embedding_col)
+
+    start_index = find_first_nan_index(df_output, 'embedding')
 
     if start_index is None:
         print("All labels already embedded.")
@@ -7957,15 +7973,16 @@ def embed_labels(df, output_csv_address, chunk_size=1000,
         labels_chunk = df_output[label][chunk_start:chunk_end]
 
         for i, label_value in enumerate(labels_chunk):
-            if pd.isna(df_output.at[chunk_start + i, embedding_col]):
+            if pd.isna(df_output.at[chunk_start + i, 'embedding']):
                 embeddings = embed_string(label_value)
                 if embeddings is not None:
-                    df_output.at[chunk_start + i, embedding_col] = embeddings
+                    df_output.at[chunk_start + i, 'embedding'] = embeddings
             pbar.update(1)
 
         df_output.to_csv(output_csv_address, index=False)
 
     pbar.close()
+    
     print("All labels embedded and CSV updated.")
 
     return df_output
@@ -11654,7 +11671,7 @@ class Node:
         try:
             return self.run(extract_output, use_cache=True)
         except Exception as e:
-            print(f"😲 Failed to run {self.name}. Retrying...")
+            print(f"Failed to run {self.name}. Retrying...")
             write_log(f"""
 The node is {self.name}
 The error is: {e}
@@ -12722,7 +12739,7 @@ class BasicStage(Node):
         self.progress = show_progress(max_value=total, value=idx)
 
         table_name = self.para["element_name"]
-        stg_table_name = rename_for_stg(table_name)
+        stg_table_name = table_name.replace("src", "stg")
         doc_df = item["table_document"][table_name]
         basic_description = doc_df.get_basic_description()
 
@@ -12992,7 +13009,7 @@ class PerformCRUD(Node):
         doc_df = item["table_document"][table_name]
         
         con = item["con"]
-        stg_table_name = rename_for_stg(table_name)
+        stg_table_name = table_name.replace("src", "stg")
         df = run_sql_return_df(con, f"select * from {stg_table_name}")
         doc_df.table_name = stg_table_name
 
@@ -14476,7 +14493,7 @@ Return the result in yml
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
 
         return summary
 
@@ -15189,16 +15206,13 @@ class SQLStep(TransformationStep):
             return self.sql_code
         
         if mode == "TABLE":
-            return f"CREATE OR REPLACE TABLE \"{self.name}\" AS\n{indent_paragraph(self.sql_code)}"
+            return f"CREATE TABLE OR REPLACE \"{self.name}\" AS\n{indent_paragraph(self.sql_code)}"
 
         if mode == "VIEW":
             return f"CREATE OR REPLACE VIEW \"{self.name}\" AS\n{indent_paragraph(self.sql_code)}"
         
         if mode == "AS":
             return f"\"{self.name}\" AS (\n{indent_paragraph(self.sql_code)}\n)"
-
-
-
 
 class TransformationSQLPipeline(TransformationPipeline):
 
@@ -15222,36 +15236,7 @@ class TransformationSQLPipeline(TransformationPipeline):
             codes += self.steps[sorted_step_idx[-1]].get_codes(target_id=sorted_step_idx[-1], mode="")
 
             return codes
-        
-        if mode == "WITH":
-            with_clauses = []
-            
-            for step_idx  in sorted_step_idx[1:]:
-                step = self.steps[step_idx]
-                codes = step.get_codes(target_id=step_idx, mode="AS")
-                with_clauses.append(codes)
-            
-            codes = ""
-            
-            if len(with_clauses) > 0:
-                codes += "WITH \n" + ",\n\n".join(with_clauses)
-            
-            return codes
 
-        if mode == "WITH_TABLE":
-            dbt_codes = self.get_codes(mode="dbt")
-            last_step_name = self.steps[sorted_step_idx[-1]].name
-            final_codes = f"CREATE OR REPLACE TABLE \"{last_step_name}\" AS\n{indent_paragraph(dbt_codes)}"
-            
-            return final_codes
-
-        if mode == "WITH_VIEW":
-            dbt_codes = self.get_codes(mode="dbt")
-            last_step_name = self.steps[sorted_step_idx[-1]].name
-            final_codes = f"CREATE OR REPLACE VIEW \"{last_step_name}\" AS\n{indent_paragraph(dbt_codes)}"
-            
-            return final_codes
-        
         if mode == "TABLE":
             
             table_clauses = []
@@ -15262,34 +15247,7 @@ class TransformationSQLPipeline(TransformationPipeline):
                 table_clauses.append(codes)
                 
             return "\n\n".join(table_clauses)
-    
-    def get_samples(self, con, columns=None, sample_size=None):
-        query = self.get_samples_query(columns, sample_size)
-        result = run_sql_return_df(con, query)
-        return result
-    
-    def get_samples_query(self, columns=None, sample_size=None):
-        if columns is None:
-            selection_clause = "*"
-        else:
-            selection_clause = ", ".join(f'"{col}"' for col in columns)
-        
-        with_context_clause = self.get_codes(mode="WITH")
-        query = f'{with_context_clause}\nSELECT {selection_clause}\nFROM "{self}"'
-        
-        if sample_size is not None:
-            query += f'\n LIMIT {sample_size}'
-        
-        return query
-    
-    def get_schema(self, con):
-        query = self.get_samples_query(sample_size=0)
-        return get_query_schema(con, query)
-    
-    def run_codes(self, con, mode="dbt"):
-        sql_code = self.get_codes(mode=mode)
-        run_sql_return_df(con, sql_code)
-        
+             
     def __repr__(self):
         final_step = self.get_final_step()
         return final_step.name
@@ -15300,12 +15258,6 @@ class TransformationSQLPipeline(TransformationPipeline):
 
  
 class DataProject:
-    image_mode = "graphviz"
-    
-    @classmethod
-    def set_image_mode(cls, mode):
-        cls.image_mode = mode
-    
     def __init__(self):
         self.tables = {}
         
@@ -15322,96 +15274,33 @@ class DataProject:
         self.fks = {}
         
         self.entities = {}
-        
-    def add_table_project(self, table_project):
-        table_name = table_project.table_name
-        self.table_object[table_name] = table_project
-
-    def change_table_name(self, old_table_name, new_table_name):
-        if old_table_name not in self.tables:
-            raise KeyError(f"Table '{old_table_name}' does not exist.")
-        
-        if new_table_name in self.tables:
-            raise ValueError(f"Table '{new_table_name}' already exists.")
-        
-        self.tables[new_table_name] = self.tables.pop(old_table_name)
-        
-        if old_table_name in self.table_object:
-            self.table_object[new_table_name] = self.table_object.pop(old_table_name)
-        
-        if old_table_name in self.links:
-            self.links[new_table_name] = self.links.pop(old_table_name)
-        for table in self.links:
-            if old_table_name in self.links[table]:
-                self.links[table][new_table_name] = self.links[table].pop(old_table_name)
-        
-        if old_table_name in self.primary_key:
-            self.primary_key[new_table_name] = self.primary_key.pop(old_table_name)
-        
-        new_foreign_key = {}
-        for (pk_table, pk), fk_list in self.foreign_key.items():
-            if pk_table == old_table_name:
-                new_key = (new_table_name, pk)
-            else:
-                new_key = (pk_table, pk)
-            
-            new_value = [(new_table_name if t == old_table_name else t, fk) for t, fk in fk_list]
-            new_foreign_key[new_key] = new_value
-        self.foreign_key = new_foreign_key
-        
-        if old_table_name in self.fks:
-            self.fks[new_table_name] = self.fks.pop(old_table_name)
-        
-        if old_table_name in self.entities:
-            self.entities[new_table_name] = self.entities.pop(old_table_name)
     
-
-    def join_graph_dict(self):
-        models = OrderedDict()
-
-        for (pk_table_name, pk), fk_list in self.foreign_key.items():
-            if pk_table_name not in models:
-                models[pk_table_name] = OrderedDict({
-                    'table_name': pk_table_name,
-                    'primary_key': pk,
-                    'foreign_keys': []
-                })
-            else:
-                if 'primary_key' not in models[pk_table_name]:
-                    models[pk_table_name]['primary_key'] = pk
-
-            for fk_table_name, fk in fk_list:
-                fk_entry = OrderedDict({
-                    'column': fk,
-                    'reference': OrderedDict({
-                        'table_name': pk_table_name,
-                        'column': pk
-                    })
-                })
-
-                if fk_table_name not in models:
-                    models[fk_table_name] = OrderedDict({
-                        'table_name': fk_table_name,
-                        'foreign_keys': [fk_entry]
-                    })
-                else:
-                    if 'foreign_keys' not in models[fk_table_name]:
-                        models[fk_table_name]['foreign_keys'] = []
-                    models[fk_table_name]['foreign_keys'].append(fk_entry)
-
-        return OrderedDict({'join_graph': list(models.values())})
-        
     def join_graph_yaml(self):
-        join_graph_dict = self.join_graph_dict()
-        yml_content = yaml.dump(join_graph_dict, default_flow_style=False)
-        return yml_content
-    
-    def build_foreign_key_from_join_graph_yml(self, join_graph_yml):
-        if isinstance(join_graph_yml, str):
-            join_graph_yml = yaml.safe_load(join_graph_yml)
+        models = []
+
+        for table_name in self.tables:
+            if table_name in self.primary_key:
+                table_entry = {
+                    'name': table_name,
+                    'primary_key': {
+                        'column': self.primary_key[table_name]
+                    }
+                }
+
+                if (table_name, self.primary_key[table_name]) in self.foreign_key:
+                    foreign_keys = []
+                    for fk_table_name, fk_column_name in self.foreign_key[(table_name, self.primary_key[table_name])]:
+                        foreign_keys.append({
+                            'table': fk_table_name,
+                            'column': fk_column_name
+                        })
+                    table_entry['primary_key']['foreign_keys'] = foreign_keys
+
+                models.append(table_entry)
+
+        yaml_output = yaml.dump({'models': models}, default_flow_style=False)
+        return yaml_output
             
-        foreign_key = reverse_join_graph(join_graph_yml)
-        self.foreign_key = foreign_key
     
     def add_foreign_key_to_primary_key(self, fk_table_name, fk, pk_table_name, pk):
         if (pk_table_name, pk) not in self.foreign_key:
@@ -15421,6 +15310,8 @@ class DataProject:
         
     def add_table_primay_key(self, table_name, primary_key):
         self.primary_key[table_name] = primary_key
+    
+    
     
     def construct_links_from_pk_fk(self):
         for (pk_table_name, pk), fk_list in self.foreign_key.items():
@@ -15469,6 +15360,7 @@ class DataProject:
     def remove_table(self, table_name):
         if table_name in self.tables:
             del self.tables[table_name]
+
         else:
             pass
         
@@ -15521,65 +15413,6 @@ class DataProject:
 
         display_draggable_graph_html(graph_data)
 
-    def generate_nodes_edges(self):
-        return generate_nodes_edges(self.foreign_key)
-
-    def display_graph_static(self):
-        nodes, edges = self.generate_nodes_edges()
-        
-        if self.image_mode == "graphviz":
-            html_output = generate_workflow_html_multiple_graphviz(nodes, edges, directional=True)
-        else:
-            html_output = generate_workflow_html_multiple(nodes, edges, directional=True)
-        display(HTML(html_output))
-
-
-def generate_nodes_edges(foreign_key):
-    table_names = set()
-    for (pk_table, _), fk_list in foreign_key.items():
-        table_names.add(pk_table)
-        for fk_table, _ in fk_list:
-            table_names.add(fk_table)
-    
-    nodes = list(table_names)
-    
-    table_to_index = {table: idx for idx, table in enumerate(nodes)}
-    
-    edges = []
-    for (pk_table, _), fk_list in foreign_key.items():
-        pk_idx = table_to_index[pk_table]
-        for fk_table, _ in fk_list:
-            fk_idx = table_to_index[fk_table]
-            edges.append((fk_idx, pk_idx))
-    
-    return nodes, edges
-
-def reverse_join_graph(join_graph_dict):
-    foreign_key = OrderedDict()
-
-    for table in join_graph_dict['join_graph']:
-        table_name = table['table_name']
-        primary_key = table.get('primary_key')
-
-        if primary_key:
-            key = (table_name, primary_key)
-            if key not in foreign_key:
-                foreign_key[key] = []
-
-        if 'foreign_keys' in table:
-            for fk in table['foreign_keys']:
-                ref_table = fk['reference']['table_name']
-                ref_column = fk['reference']['column']
-                fk_column = fk['column']
-
-                key = (ref_table, ref_column)
-                if key not in foreign_key:
-                    foreign_key[key] = []
-                foreign_key[key].append((table_name, fk_column))
-
-    return foreign_key
-
-
 
 
 
@@ -15605,9 +15438,7 @@ def display_duplicated_rows_html2(df):
     
     display(HTML(html_output))
 
-def create_explore_button(query_widget, table_name=None, query="", list_description="", with_context=None, show_with_context=True):
-    error_msg = widgets.HTML(value='')
-    
+def create_explore_button(query_widget, table_name=None, query="", list_description=""):
     if isinstance(table_name, list):
         dropdown = widgets.Dropdown(
             description=list_description,
@@ -15626,21 +15457,20 @@ def create_explore_button(query_widget, table_name=None, query="", list_descript
         def on_button_clicked(b):
             selected_table = dropdown.value
             if selected_table:
-                query = f'SELECT * FROM "{selected_table}"'
-                error_msg.value = f"<div style='color: green;'>😎 Query submitted for {selected_table}. Check out the data widget!</div>"
+                query = f"SELECT * FROM {selected_table}"
+                print(f"😎 Query submitted for {selected_table}. Check out the data widget!")
                 query_widget.run_query(query)
             else:
-                error_msg.value = f"<div style='color: red;'>Please select a table from the dropdown.</div>"
+                print("Please select a table from the dropdown.")
         
         explore_button.on_click(on_button_clicked)
         
-        display(VBox([HBox([dropdown, explore_button]), error_msg]))
+        display(widgets.HBox([dropdown, explore_button]))
         return dropdown
         
     else:
         if table_name is not None:
-            query = f'SELECT * FROM "{table_name}"'
-            
+            query = f"SELECT * FROM {table_name}"
         explore_button = widgets.Button(
             description='Explore',
             disabled=False,
@@ -15650,20 +15480,12 @@ def create_explore_button(query_widget, table_name=None, query="", list_descript
         )
 
         def on_button_clicked(b):
-            nonlocal with_context  
-            error_msg.value = f"<div style='color: green;'>😎 Query submitted. Check out the data widget!</div>"
-            if show_with_context:
-                if with_context is None: 
-                    if isinstance(table_name, TransformationSQLPipeline):
-                        with_context = table_name.get_codes(mode="WITH")
-                    else:
-                        with_context = ""
-                query_widget.update_context_value(with_context)
-                
+            print("😎 Query submitted. Check out the data widget!")
             query_widget.run_query(query)
 
         explore_button.on_click(on_button_clicked)
-        display(VBox([explore_button, error_msg]))
+
+        display(explore_button)
         
 
 
@@ -15684,13 +15506,14 @@ class DescribeColumns(Node):
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         sample_size = 5
         
         table_summary = self.get_sibling_document("Create Short Source Table Summary")
 
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
         table_desc = sample_df.to_csv(index=False, quoting=1)
         
         return table_desc, table_summary, columns
@@ -15732,17 +15555,18 @@ Return in the following format:
             display(HTML('''<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css"> '''))
 
         json_code = run_output
-        _, _, columns = extract_output
+        
         self.progress.value += 1
 
         table_pipeline = self.para["table_pipeline"]
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_pipeline)
+        schema = table_pipeline.get_final_step().get_schema()
 
         rows_list = []
 
-        for col in columns:
+        for col in schema:
             rows_list.append({
                 "Column": col,
                 "Summary": json_code[col],
@@ -15792,12 +15616,17 @@ class DecideProjection(Node):
         table_pipeline = self.para["table_pipeline"]
         schema = get_table_schema(con, table_pipeline)
 
-        display(HTML(f"{running_spinner_html} Exploring table <i>{table_pipeline}</i>..."))
+        print(f"🔍 Exploring table {BOLD}{table_pipeline}{END} ...")
+        
         query_widget = self.item["query_widget"]
+
         create_explore_button(query_widget, table_pipeline)
 
         num_cols = len(schema)
+
+        
         column_names = list(schema.keys())
+
         document = {"selected_columns": []}
 
         def callback_next(selected_indices):
@@ -15813,35 +15642,22 @@ class DecideProjection(Node):
                 new_table_name = f"{table_pipeline}_projected"
                 selection_clause = ',\n'.join(document['selected_columns'])
                 sql_query = f'SELECT \n{indent_paragraph(selection_clause)}\nFROM "{table_pipeline}"'
-                comment = f"-- Projection: Selecting {len(document['selected_columns'])} out of {num_cols} columns\n"
-                if num_cols - len(selected_indices) < 10:
-                    not_selected_columns = [column_names[i] for i in range(num_cols) if i not in selected_indices]
-                    comment += f"-- Columns projected out: {not_selected_columns}\n"
-                sql_query = comment + sql_query
+                sql_query = f"-- Projection: Selecting {len(document['selected_columns'])} out of {num_cols} columns\n" + sql_query
                 step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
+                step.run_codes()
                 table_pipeline.add_step_to_final(step)
-                
+
             callback(document)
+            
+        if self.viewer or ("viewer" in self.para and self.para["viewer"]):
+            callback_next(list(range(num_cols)))
             return
             
+            
         display(HTML(f"🧐 Please select the columns to <b>include</b>.<br> 😊 Cocoon is currently not robust for >50 columns. Support for wide table is under development."))
-        except_columns = ["_fivetran_synced"]
-        multi_select = create_column_selector(column_names, default=True, except_columns = except_columns)
+        create_column_selector(column_names, callback_next, default=True)
 
-        submit_button = widgets.Button(description="Submit", button_style='success', icon='check')
-        
-        def submit(b):
-            selected_indices = multi_select.value
-            callback_next(selected_indices)
-            return 
-        
-        submit_button.on_click(submit)
-        
-        if self.viewer or ("viewer" in self.para and self.para["viewer"]):
-            submit(submit_button)
-            return
-        
-        display(submit_button)
+
 
 class CreateColumnGrouping(Node):
     default_name = 'Create Column Grouping'
@@ -15866,10 +15682,12 @@ class CreateColumnGrouping(Node):
         schema = get_table_schema(con, table_pipeline)
         columns = list(schema.keys())
 
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
+        self.sample_df = sample_df
         table_desc = sample_df.to_csv(index=False, quoting=1)
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         column_names = list(schema.keys())
 
         return table_desc, table_summary, column_names
@@ -16044,9 +15862,10 @@ class CreateTableSummary(Node):
         table_pipeline = self.para["table_pipeline"]
         sample_size = 5
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
         
         table_desc = sample_df.to_csv(index=False, quoting=1)
 
@@ -16158,13 +15977,7 @@ Now, your summary:
             on_button_clicked(submit_button)
             return
 
-def find_duplicate_rows(con, table_name, sample_size=0, with_context = ""):
-    if isinstance(table_name, TransformationSQLPipeline):
-        with_context = table_name.get_codes(mode="WITH")
-        return find_duplicate_rows_result(con, table_name, sample_size=sample_size, with_context=with_context)
-    else:
-        return find_duplicate_rows_result(con, table_name, sample_size=sample_size)
-        
+
 class DecideDuplicate(Node):
     default_name = 'Decide Duplicate'
     default_description = 'This allows users to decide how to handle duplicated rows.'
@@ -16174,7 +15987,7 @@ class DecideDuplicate(Node):
         if icon_import:
             display(HTML('''<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css"> '''))
 
-        display(HTML("🔍 Checking duplicated rows ..."))
+        print("🔍 Checking duplicated rows ...")
         
         create_progress_bar_with_numbers(0, doc_steps)
         self.progress = show_progress(1)
@@ -16184,8 +15997,7 @@ class DecideDuplicate(Node):
 
         duplicate_count, sample_duplicate_rows = find_duplicate_rows(con, table_pipeline)
 
-        document = {"duplicate_count": duplicate_count, 
-                    "duplicate_removed": False}
+        document = {"duplicate_count": duplicate_count, "duplicate_removed": False}
         
         self.progress.value += 1
 
@@ -16200,6 +16012,7 @@ class DecideDuplicate(Node):
                     sql_query = f'SELECT DISTINCT * FROM "{table_pipeline}"'
                     sql_query = f"-- Deduplication: Removed {duplicate_count} duplicated rows\n" + sql_query
                     step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
+                    step.run_codes()
                     self.para["table_pipeline"].add_step_to_final(step)
                     document["duplicate_removed"] = True
                 callback(document)
@@ -16235,13 +16048,11 @@ class DecideDuplicate(Node):
 
 
 
-def get_missing_percentage(con, table_name, column_name, with_context=""):
+def get_missing_percentage(con, table_name, column_name):
     query = f"""
     SELECT COUNT(*) as total_count, COUNT("{column_name}") as non_missing_count
     FROM "{table_name}"
     """
-    
-    query = with_context + "\n" + query
     
     result = run_sql_return_df(con, query)
     total_count = result.iloc[0, 0]
@@ -16267,17 +16078,17 @@ class DecideRegex(Node):
         
         
         table_pipeline = self.para["table_pipeline"]
+        table_name = table_pipeline.get_final_step().name
         column_name = self.para["column_name"]
-        with_context = table_pipeline.get_codes(mode="WITH")
         
-        display(HTML(f"{running_spinner_html} Reading regex pattern for <i>{table_pipeline}[{column_name}]</i>..."))
+        display(HTML(f"🔍 Reading regex pattern for <i>{table_name}[{column_name}]</i>..."))
         create_progress_bar_with_numbers(2, doc_steps)
         show_progress(max_value=total, value=idx)
 
-        return column_name, table_pipeline, with_context
+        return column_name, table_name
     
     def run(self, extract_output, use_cache=True):
-        column_name, table_name, with_context = extract_output
+        column_name, table_name = extract_output
         
         max_iterations = self.class_para.get("max_iterations", self.max_iterations)
 
@@ -16291,7 +16102,7 @@ class DecideRegex(Node):
         i = 0
         for i in range(max_iterations):
             sample_values = create_sample_distinct_query_regex(con, table_name, column_name, 
-                                                sample_size, regex_except_list=regex_list, with_context=with_context)
+                                                sample_size, regex_except_list=regex_list)
             
             if len(sample_values) == 0:
                 break
@@ -16333,7 +16144,7 @@ patterns: # leave empty if free texts
             self.messages.append(messages)
 
             yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-            summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+            summary = yaml.safe_load(yml_code)
             
             if "patterns" not in summary or summary["patterns"] is None or len(summary["patterns"]) == 0:
                 summary["patterns"] = []
@@ -16365,10 +16176,8 @@ patterns: # leave empty if free texts
                 for regex in regex_list:
                     regex_match_clause = create_regex_match_clause(con, column_name, regex)
                     query += f"AND NOT {regex_match_clause} \n"
-                
-                query = with_context + "\n" + query
+                    
                 result_df = run_sql_return_df(con,query)
-                
                 if result_df.iloc[0,0] == 0:
                     continue
                 
@@ -16385,7 +16194,7 @@ patterns: # leave empty if free texts
     
 
     def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        column_name, table_name, with_context = extract_output
+        column_name, table_name = extract_output
         table_object = self.para["table_object"]
         table_object.patterns[column_name] = run_output
         
@@ -16407,27 +16216,20 @@ class DecideRegexForAll(MultipleNode):
 
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
+        schema = table_pipeline.get_final_step().get_schema()
+        columns = list(schema.keys())
+        self.elements = []
+        self.nodes = {}
+        table_pipeline = self.para["table_pipeline"]
         con = self.item["con"]
         database_name = get_database_name(con)
         
-        schema = table_pipeline.get_schema(con)
-        columns = list(schema.keys())
         
-        self.elements = []
-        self.nodes = {}
-        
-        with_context = table_pipeline.get_codes(mode="WITH")
-        
-        sql_query = generate_count_distinct_query(table_pipeline, columns, ratio=False)
-        sql_query = with_context + "\n" + sql_query
-        distinct_count_df = run_sql_return_df(con, sql_query)
-        
+        distinct_count = table_pipeline.get_final_step().get_distinct_count()
         distinct_threshold = self.class_para.get("distinct_threshold", self.default_distinct_threshold)
 
         for col in columns:
-            col_distinct_count = distinct_count_df[col].iloc[0]
-            
-            if get_reverse_type(schema[col], database_name) == 'VARCHAR' and col_distinct_count > distinct_threshold:
+            if get_reverse_type(schema[col], database_name) == 'VARCHAR' and distinct_count[col] > distinct_threshold:
                 self.elements.append(col)
 
         self.nodes = {col: self.construct_node(col, idx, len(self.elements)) for idx, col in enumerate(self.elements)}
@@ -16453,16 +16255,13 @@ class DecideUnusual(Node):
         table_pipeline = self.para["table_pipeline"]
         column_name = self.para["column_name"]
         
-        display(HTML(f"{running_spinner_html} Understanding unusual values for <i>{table_pipeline}[{column_name}]</i>"))
+        display(HTML(f"🔍 Understanding unusual values for <i>{table_pipeline}[{column_name}]</i>"))
         create_progress_bar_with_numbers(3, doc_steps)
         show_progress(max_value=total, value=idx)
         
         sample_size = 20
 
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        sample_values = run_sql_return_df(con,query)
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
         
         return column_name, sample_values
 
@@ -16519,9 +16318,7 @@ class DecideUnusualForAll(MultipleNode):
 
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = [col for col in schema if schema[col] in data_types['VARCHAR']]
         self.elements = []
         self.nodes = {}
@@ -16590,9 +16387,7 @@ class DecideLongitudeLatitude(Node):
         self.input_item = item
 
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         
         sample_size = 5
@@ -16646,13 +16441,13 @@ class DecideColumnRange(Node):
         self.input_item = item
 
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        sample_size = 5
-        
-        
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+        
+        sample_size = 5
+        con = self.item["con"]
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
         table_desc = sample_df.to_csv(index=False, quoting=1)
         database_name = get_database_name(con)
         
@@ -16731,8 +16526,7 @@ Now, return in the following format:
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_pipeline)
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
 
         rows_list = []
 
@@ -16795,16 +16589,14 @@ class DecideMissing(Node):
         table_pipeline = self.para["table_pipeline"]
         table_name = table_pipeline.get_final_step().name
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         sample_size = 5
-        
-        with_context = table_pipeline.get_codes(mode="WITH")
 
         missing_columns = {}
 
         for col in columns:
-            missing_percentage = get_missing_percentage(con, table_name, col, with_context=with_context)
+            missing_percentage = get_missing_percentage(con, table_name, col)
             if missing_percentage > 0:
                 missing_columns[col] = missing_percentage
 
@@ -16951,16 +16743,13 @@ class DecideDMV(Node):
         table_pipeline = self.para["table_pipeline"]
         column_name = self.para["column_name"]
         
-        display(HTML(f"{running_spinner_html} Understanding disguised missing values <i>{table_pipeline}[{column_name}]</i>"))
+        display(HTML(f"🔍 Understanding disguised missing values <i>{table_pipeline}[{column_name}]</i>"))
         create_progress_bar_with_numbers(3, doc_steps)
         show_progress(max_value=total, value=idx)
         
         sample_size = 20
 
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        sample_values = run_sql_return_df(con,query)
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
         
         return column_name, sample_values
 
@@ -17029,10 +16818,10 @@ class DecideDMVforAll(MultipleNode):
     
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
+        schema = table_pipeline.get_final_step().get_schema()
+        
         con = self.item["con"]
         database_name = get_database_name(con)
-        
-        schema = table_pipeline.get_schema(con)
         columns = [col for col in schema if get_reverse_type(schema[col], database_name) =='VARCHAR']
         
         self.elements = []
@@ -17067,9 +16856,9 @@ class DecideDMVforAll(MultipleNode):
         reset = True
         grid = create_dataframe_grid(df, editable_columns, reset=reset, lists=lists)
         
-        display(HTML(f"""😎 We have identified disguised missing values (DMV)!<br>
-Please review and enter the values that will be imputed to NULL.<br>
-⚠️ Empty DMV is because of empty string."""))
+        print("😎 We have identified disguised missing values (DMV)!")
+        print("Please review and enter the values that will be imputed to NULL.")
+        print("⚠️ Empty DMV is because of empty string.")
         display(grid)
         
         next_button = widgets.Button(
@@ -17105,8 +16894,7 @@ Please review and enter the values that will be imputed to NULL.<br>
             comment = "-- NULL Imputation: Impute Null to Disguised Missing Values\n"
             selection_clauses = []
 
-            con = self.item["con"]
-            schema = table_pipeline.get_schema(con)
+            schema = table_pipeline.get_final_step().get_schema()
             columns = set(schema.keys())
 
             for index, row in new_df.iterrows():
@@ -17139,6 +16927,7 @@ Please review and enter the values that will be imputed to NULL.<br>
             sql_query = comment + sql_query
             con = self.item["con"]
             step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
+            step.run_codes()
             table_pipeline.add_step_to_final(step)
             
             
@@ -17162,88 +16951,62 @@ def check_column_uniqueness(con, table_name, column_name, allow_null=False):
     return distinct_count == total_count
 
 
-class DecideUnique(ListNode):
+class DecideUnique(Node):
     default_name = 'Decide Unique Columns'
     default_description = 'This node allows users to decide which columns should be unique.'
-    
 
     def extract(self, item):
         clear_output(wait=True)
         
         table_pipeline = self.para["table_pipeline"]
-        table_object = self.para["table_object"]
         table_name = table_pipeline.get_final_step().name
-        with_context = table_pipeline.get_codes(mode="WITH")
 
-
-        display(HTML(f"{running_spinner_html} Checking uniqueness for <i>{table_name}</i>..."))
+        display(HTML(f"🔍 Checking uniqueness for <i>{table_name}</i>..."))
         create_progress_bar_with_numbers(3, doc_steps)
         self.progress = show_progress(1)
 
         con = self.item["con"]
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         
         sample_size = 5
 
         unique_columns = []
         highly_unique_columns = []
-        column_descs = {}
-        
+
         for col in columns:
-            distinct_count, total_count = compute_unique_ratio(con, table_name, col, allow_null=True, with_context=with_context)
-            if total_count  == 0:
-                continue
+            distinct_count, total_count = compute_unique_ratio(con, table_name, col, allow_null=True)
             if distinct_count/total_count > 0.9:
                 highly_unique_columns.append(col)
-                column_desc = table_object.column_desc.get(col, "")
-                column_descs[col] = f"{col}: {column_desc}"
-                
             if distinct_count == total_count:            
                 unique_columns.append(col)
-        
-        table_desc = table_object.table_summary
-        
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+                
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_name}" LIMIT {sample_size}')
         sample_df_str = sample_df.to_csv(index=False, quoting=1)    
 
-        outputs = []
-        
-        for i in range(0, len(highly_unique_columns), 10):
-            outputs.append((unique_columns, column_descs, table_desc, sample_df_str, table_name, columns, highly_unique_columns[i:i+10]))
-        
-        if len(outputs) == 0:
-            outputs.append((unique_columns, column_descs, table_desc, sample_df_str, table_name, columns, []))
-        
-        return outputs
+        return unique_columns, sample_df_str, table_name, columns, highly_unique_columns
 
     def run(self, extract_output, use_cache=True):
         
-        unique_columns, column_descs, table_desc, sample_df_str, table_name, columns, highly_unique_columns = extract_output
+        unique_columns, sample_df_str, table_name, columns, highly_unique_columns = extract_output
         
         if len(highly_unique_columns) == 0:
-            return {"reasoning": "No single column that can be candidate key.", 
-                    "continuous_columns": [],
-                    "non_continuous_columns": {}}
+            return {"reasoning": "No single column that can be candidate key.", "candidate_key": {}}
         
-        column_descs_str = "\n".join([column_descs[col] for col in highly_unique_columns])
 
 
-        template = f"""You have the following table: {table_desc}
-        
-Samples:
+        template = f"""You have the following table:
 {sample_df_str}
 
-The following columns may be candidate key: {highly_unique_columns}
-{column_descs_str}
-
-Identify the column that can actually be candidate key.
+The following columns have high uniqueness: {highly_unique_columns}
+Identify the column that can be candidate key.
 First, identify continuous columns can't be candidate key (e.g., temperature)
-Then, walk through each remaining key.
+Then, walk through each remain key.
 E.g., for a table of customer, "customer_id" is can be candidate key.
 But "first_name" is not always, as there can be multiple customers with the same first name.
-"region_id" is not the candidate key for customer table, where each row is a customer, because multiple customers (rows) can be in the same region.
+"region_id" is not the candidate key for customer table, because multiple customers can be in the same region.
 But "region_id" could be the candidate key for region table.
 
 Return in the following format:
@@ -17261,7 +17024,7 @@ non_continuous_columns:
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
@@ -17277,16 +17040,8 @@ non_continuous_columns:
 
         return summary
     
-    def merge_run_output(self, run_outputs):
-        continuous_columns = []
-        non_continuous_columns = {}
-        for run_output in run_outputs:
-            continuous_columns.extend(run_output["continuous_columns"])
-            non_continuous_columns.update(run_output["non_continuous_columns"])
-        return {"continuous_columns": continuous_columns, "non_continuous_columns": non_continuous_columns}
-    
     def run_but_fail(self, extract_output, use_cache=True):
-        unique_columns, column_descs, table_desc, sample_df_str, table_name, columns, highly_unique_columns = extract_output
+        unique_columns, sample_df_str, table_name, columns, highly_unique_columns = extract_output
         return {"continuous_columns": [],
                 "non_continuous_columns": {col: 
                     {"reasoning": "Fail to run",
@@ -17297,12 +17052,7 @@ non_continuous_columns:
         
         self.progress.value += 1
         json_code = run_output
-        
-        unique_columns, column_descs, table_desc, sample_df_str, table_name, columns, highly_unique_columns = extract_output[0]
-        
-        for eo in extract_output[1:]:
-            _, _, _, _, _, _, huc = eo
-            highly_unique_columns.extend(huc)
+        unique_columns, sample_df_str, table_name, columns, highly_unique_columns = extract_output
         
         if icon_import:
             display(HTML('''<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css"> '''))
@@ -17380,7 +17130,7 @@ non_continuous_columns:
             on_button_clicked(next_button)
             return
         
-        display(HTML(f"😎 Please verify unique columns. We will add unique to column tests:"))
+        display(HTML(f"😎 We have identified columns should be unique. Please verify:"))
         display(grid)
         display(HBox([reject_button, next_button]))
         
@@ -17469,24 +17219,11 @@ def replace_df_html_col_with_dropdown(df, df_html, col_name):
 
 def build_histogram_inputs(con, column, tablename):
     num_bins = 20
-    query_min_max = f'SELECT MIN("{column}") AS min_val, MAX("{column}") AS max_val FROM "{tablename}" WHERE "{column}" IS NOT NULL;'
-    
-    if isinstance(tablename, TransformationSQLPipeline):
-        with_context = tablename.get_codes(mode="WITH")
-        query_min_max = with_context + "\n" + query_min_max
-    
-    result_df = run_sql_return_df(con, query_min_max)
-
-    if result_df.empty or result_df.iloc[0].isnull().any():
-        return [], 0, []
-
-    min_val, max_val = result_df.iloc[0]
+    query_min_max = f'SELECT MIN("{column}") AS min_val, MAX("{column}") AS max_val FROM "{tablename}";'
+    min_val, max_val = run_sql_return_df(con, query_min_max).iloc[0]
 
     if min_val == max_val:
-        total_count_query = f'SELECT COUNT(*) FROM "{tablename}" WHERE "{column}" IS NOT NULL;'
-        if isinstance(tablename, TransformationSQLPipeline):
-            with_context = tablename.get_codes(mode="WITH")
-            total_count_query = with_context + "\n" + total_count_query
+        total_count_query = f'SELECT COUNT(*) FROM "{tablename}";'
         total_count = run_sql_return_df(con, total_count_query).iloc[0][0]
         return [total_count], min_val, [min_val]
 
@@ -17506,7 +17243,7 @@ def build_histogram_inputs(con, column, tablename):
     case_statement = ' '.join(case_statements)
 
     query = f'''
-    BINS AS (
+    WITH BINS AS (
         SELECT CAST(ROW_NUMBER() OVER (ORDER BY NULL) AS INTEGER) AS BIN
         FROM "{tablename}"
         LIMIT {num_bins}
@@ -17520,21 +17257,11 @@ def build_histogram_inputs(con, column, tablename):
             CASE {case_statement} ELSE NULL END AS BIN,
             COUNT(*) AS COUNT
         FROM "{tablename}"
-        WHERE "{column}" IS NOT NULL
         GROUP BY BIN
     ) COUNTS ON BINS.BIN = COUNTS.BIN
     ORDER BY BINS.BIN;
     '''
-    
-    if isinstance(tablename, TransformationSQLPipeline):
-        with_context = tablename.get_codes(mode="WITH")
-        if with_context.strip() == "":
-            query = "WITH " + query
-        else:
-            query = with_context + ",\n" + query
-    else:
-        query = "WITH " + query
-            
+
     result_df = run_sql_return_df(con, query)
 
     counts = result_df['COUNT'].tolist()
@@ -17542,24 +17269,17 @@ def build_histogram_inputs(con, column, tablename):
 
     return counts, bin_width, bin_centers
 
-
 def df_to_list(df):
     return [tuple(row) for row in df.itertuples(index=False, name=None)]
 
 
 def build_barchat_input(con, column, tablename, limit=6):
-    
     count_query = f'SELECT COUNT(DISTINCT "{column}") AS distinct_count FROM "{tablename}" WHERE "{column}" IS NOT NULL'
-    
-    if isinstance(tablename, TransformationSQLPipeline):
-        with_context = tablename.get_codes(mode="WITH")
-        count_query = with_context + "\n" + count_query
-    
     distinct_count_result = run_sql_return_df(con, count_query).iloc[0][0]
 
     if distinct_count_result > limit:
         fetch_query = f'''
-        CityCounts AS (
+        WITH CityCounts AS (
             SELECT CAST("{column}" AS VARCHAR) AS "{column}", COUNT(*) AS count
             FROM "{tablename}"
             WHERE "{column}" IS NOT NULL
@@ -17580,16 +17300,6 @@ def build_barchat_input(con, column, tablename, limit=6):
         UNION ALL
         SELECT * FROM OtherGroup
         '''
-        
-        if isinstance(tablename, TransformationSQLPipeline):
-            with_context = tablename.get_codes(mode="WITH")
-            if with_context.strip() == "":
-                fetch_query = "WITH " + fetch_query
-            else:
-                fetch_query = with_context + ",\n" + fetch_query
-        else:
-            fetch_query = "WITH " + fetch_query
-            
     else:
         fetch_query = f'''
         SELECT "{column}", COUNT(*) AS count
@@ -17599,12 +17309,8 @@ def build_barchat_input(con, column, tablename, limit=6):
         ORDER BY count DESC
         '''
 
-        if isinstance(tablename, TransformationSQLPipeline):
-            with_context = tablename.get_codes(mode="WITH")
-            fetch_query = with_context + "\n" + fetch_query
-        
     result = df_to_list(run_sql_return_df(con, fetch_query))
-    result_dict = {str(row[0]): row[1] for row in result}
+    result_dict = {row[0]: row[1] for row in result}
     return result_dict
 
 
@@ -17729,7 +17435,7 @@ class GenerateProfileReport(Node):
     def extract(self, item):
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         df = run_sql_return_df(con, f'SELECT * FROM "{table_pipeline}" LIMIT  100')
         table_name = table_pipeline
 
@@ -18678,22 +18384,14 @@ class CleanUnusual(ListNode):
 
         column_name = self.para["column_name"]
         
-        display(HTML(f"{running_spinner_html} Cleaning unusual values for <i>{table_pipeline}[{column_name}]</i>..."))
+        display(HTML(f"🧹 Cleaning unusual values for <i>{table_pipeline}[{column_name}]</i>..."))
         create_progress_bar_with_numbers(3, doc_steps)
         show_progress(max_value=total, value=idx)
         
         sample_size = self.class_para.get("sample_size", self.default_sample_size)
 
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        
-        sample_values = run_sql_return_df(con,query)
-        
-        query =  construct_distinct_count_query(table_pipeline, column_name)
-        query = with_context + "\n" + query
-        total_distinct_count = run_sql_return_df(con,query).iloc[0, 0]
-        
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
+        total_distinct_count = count_total_distinct(con, table_pipeline, column_name)
 
         outputs = []
         
@@ -18737,16 +18435,14 @@ mapping: # just the values need to be changed; remember to escape quote in yml (
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         summary["projection"] = False 
         summary["could_clean"] = True
         
         def clean_mapping(mapping):
-            if mapping is None:
-                return {}
             return {k: v for k, v in mapping.items() if k != v}
 
-        summary["mapping"] = clean_mapping(summary.get("mapping", {}))
+        summary["mapping"] = clean_mapping(summary["mapping"])
 
         return summary
     
@@ -18786,11 +18482,8 @@ mapping: # just the values need to be changed; remember to escape quote in yml (
         column_name = self.para["column_name"]
         query_widget = self.item["query_widget"]
 
-        table_pipeline = self.para["table_pipeline"]
-        with_context = table_pipeline.get_codes(mode="WITH")
-
         query = create_sample_distinct_query(table_name=table_pipeline, column_name=column_name)
-        create_explore_button(query_widget=query_widget, query=query, with_context=with_context)
+        create_explore_button(query_widget=query_widget, query=query)
 
         json_code["unusual_reason"] = unusual_reason
 
@@ -18930,7 +18623,8 @@ class CleanUnusualForAll(MultipleNode):
 
     def extract(self, item):
         clear_output(wait=True)
-        document = self.get_sibling_document("Decide Unusual String For All").get("Decide String Unusual", {})
+
+        document = self.get_sibling_document("Decide Unusual String For All")["Decide String Unusual"]
 
         columns = list(document.keys())
         self.elements = []
@@ -18959,8 +18653,7 @@ class CleanUnusualForAll(MultipleNode):
             return
 
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         
         new_table_name = f"{table_pipeline}_cleaned"
@@ -18997,11 +18690,7 @@ class CleanUnusualForAll(MultipleNode):
                     for old_value, new_value in mapping.items():
                         old_value = old_value.replace("''", "'").replace("'", "''")
                         new_value = new_value.replace("''", "'").replace("'", "''")
-                        if new_value != "":
-                            new_value = f"'{new_value}'"
-                        else:
-                            new_value = "NULL"
-                        selection_str += f'    WHEN "{col}" = \'{old_value}\' THEN {new_value}\n'
+                        selection_str += f'    WHEN "{col}" = \'{old_value}\' THEN \'{new_value}\'\n'
                     selection_str += f'    ELSE "{col}"\n'
                     selection_str += f'END AS "{col}"'
                     selections.append(selection_str)
@@ -19018,6 +18707,8 @@ FROM "{table_pipeline}"{where_sql}"""
         
         sql_query = comment + sql_query
         step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
+        step.run_codes()
+
         table_pipeline.add_step_to_final(step)
 
         callback(document)
@@ -19031,9 +18722,8 @@ class HandleMissing(Node):
         create_progress_bar_with_numbers(2, doc_steps)
 
         document = self.get_sibling_document("Decide Missing Values")
-        con = self.item["con"]
-        schema = self.para["table_pipeline"].get_schema(con)
-    
+        schema = self.para["table_pipeline"].get_final_step().get_schema()
+        
         return document, schema
     
     def postprocess(self, run_output, callback, viewer=False, extract_output=None):
@@ -19133,6 +18823,7 @@ FROM "{table_name}\""""
             if missing_handling_sql != "":
                 new_table_name = f"{table_pipeline}_missing_handled"
                 step = SQLStep(table_name=new_table_name, sql_code=missing_handling_sql, con=self.item["con"])
+                step.run_codes()
                 self.para["table_pipeline"].add_step_to_final(step)
             
             document = new_df.to_json(orient="split")
@@ -19168,15 +18859,16 @@ class DecideDataType(Node):
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         sample_size = 5
         
         database_name = get_database_name(con)
         all_data_types = list(data_types_database[database_name].keys())
 
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
-        schema = table_pipeline.get_schema(con)
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
+        schema = table_pipeline.get_final_step().get_schema()
 
         return sample_df, all_data_types, database_name, schema
 
@@ -19293,7 +18985,7 @@ class TransformType(ListNode):
         idx = self.para["column_idx"]
         total = self.para["total_columns"]
 
-        display(HTML(f"{running_spinner_html} Transforming type for <i>{table_pipeline}[{column_name}]</i>..."))
+        display(HTML(f"🔍 Transforming type for <i>{table_pipeline}[{column_name}]</i>..."))
         create_progress_bar_with_numbers(1, doc_steps)
         show_progress(max_value=total, value=idx)
 
@@ -19310,14 +19002,10 @@ class TransformType(ListNode):
         
         table_object = self.para["table_object"]
         patterns = table_object.patterns.get(column_name, [])
-        with_context = table_pipeline.get_codes(mode="WITH")
         
         if len(patterns) == 0:
-            query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-            
-            query = with_context + "\n" + query
-            sample_values = run_sql_return_df(con,query)
-            return [(column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, None, [], with_context)]
+            sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
+            return [(column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, None, [])]
         
         else:
             for i in range(len(patterns)):
@@ -19325,12 +19013,12 @@ class TransformType(ListNode):
                 regex = pattern["regex"]
                 previous_patterns = [p["regex"] for p in patterns[:i]]
                 sample_values = create_sample_distinct_query_regex(con, table_pipeline, column_name, sample_size, 
-                                                                   regex_except_list=previous_patterns, regex_list=[regex], with_context=with_context)
-                outputs.append((column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, regex, previous_patterns, with_context))
+                                                                   regex_except_list=previous_patterns, regex_list=[regex])
+                outputs.append((column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, regex, previous_patterns))
             return outputs
         
     def run(self, extract_output, use_cache=True):
-        column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, regex, except_regex, with_context= extract_output
+        column_name, sample_values, current_type, target_type, database_name, table_pipeline, con, hint, regex, except_regex= extract_output
         max_iterations = 10
         
         value_list = sample_values[column_name].tolist()
@@ -19357,7 +19045,7 @@ cast_clause: |
         self.messages.append(messages)
 
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         reasoning = summary["reasoning"]
         
         def clean_clause(clause):
@@ -19386,7 +19074,7 @@ cast_clause: |
                     sql += f'\nWHERE {create_regex_match_clause(con, column_name, regex)}'
                 for each_except_regex in except_regex:
                     sql += f'\nAND NOT {create_regex_match_clause(con, column_name, each_except_regex)}'
-                sql = with_context + "\n" + sql
+
                 df = run_sql_return_df(con, sql)
                 break
             except Exception: 
@@ -19415,7 +19103,7 @@ cast_clause: |
                 self.messages.append(messages)
 
                 yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-                summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+                summary = yaml.safe_load(yml_code)
                 summary["cast_clause"] = clean_clause(summary["cast_clause"]) 
                 
         if i == max_iterations - 1:
@@ -19535,9 +19223,6 @@ class TransformTypeForAll(MultipleNode):
             icon='play'
         )
         
-        table_pipeline = self.para["table_pipeline"]
-        with_context_clause = table_pipeline.get_codes(mode="WITH")
-
         def on_button_clicked(b):
             new_df =  grid_to_updated_dataframe(grid, long_text=long_text)
             query = "SELECT\n"
@@ -19547,7 +19232,6 @@ class TransformTypeForAll(MultipleNode):
                 query += f'    "{column_name}" AS "{column_name}",\n'
                 query += indent_paragraph(clause) + "\n"
             query = query[:-2] + f'\nFROM "{self.para["table_pipeline"]}"'
-            query_widget.update_context_value(with_context_clause)
             query_widget.run_query(query)
             print("😎 Query submitted. Check out the data widget!")
         
@@ -19566,8 +19250,7 @@ class TransformTypeForAll(MultipleNode):
             affected_columns = new_df["Column Name"].tolist()
             document = new_df.to_json(orient="split")
             new_table_name = f"{self.para['table_pipeline']}_casted"
-            con = self.item["con"]
-            schema = self.para["table_pipeline"].get_schema(con)
+            schema = self.para["table_pipeline"].get_final_step().get_schema()
             columns = list(schema.keys())
             non_affected_columns = [f'"{col}"' for col in columns if col not in affected_columns]
 
@@ -19587,6 +19270,7 @@ class TransformTypeForAll(MultipleNode):
             sql_query = comment + sql_query
 
             step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
+            step.run_codes()
             self.para["table_pipeline"].add_step_to_final(step)
 
             callback(document)
@@ -19620,23 +19304,22 @@ class DecideTrim(Node):
         database_name = get_database_name(con)
 
         table_pipeline = self.para["table_pipeline"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = []
 
-        with_context = table_pipeline.get_codes(mode="WITH")
-        
         for column in schema:
             current_type = get_reverse_type(schema[column], database_name)
             if current_type == "VARCHAR":
                 where_clause = where_clause_for_space(column)
-                count = run_sql_return_df(con, f'{with_context} \n SELECT COUNT(*) FROM "{table_pipeline}" WHERE {where_clause}').iloc[0, 0]
+                count = run_sql_return_df(con, f'SELECT COUNT(*) FROM "{table_pipeline}" WHERE {where_clause}').iloc[0, 0]
                 if count > 0:
                     columns.append(column)
 
         sample_size = 2
         sample_df = None
         if len(columns) > 0:
-            sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+            all_columns = ', '.join(f'"{col}"' for col in columns)
+            sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
         
         return columns, sample_df
     
@@ -19760,8 +19443,7 @@ Return in the following format:
 
                 new_table_name = f"{sql_pipeline}_trimmed"
 
-                con = self.item["con"]
-                schema = self.para["table_pipeline"].get_schema(con)
+                schema = self.para["table_pipeline"].get_final_step().get_schema()
                 all_columns = list(schema.keys())
                 non_affected_columns = [f'"{col}"' for col in all_columns if col not in new_df["Column Name"].tolist()]
                 sql_query = "SELECT\n"
@@ -19786,6 +19468,7 @@ Return in the following format:
                 sql_query = "-- Trim Leading and Trailing Spaces\n" + sql_query
 
                 step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
+                step.run_codes()
                 sql_pipeline.add_step_to_final(step)
 
             callback(new_df.to_json(orient="split"))
@@ -19819,16 +19502,13 @@ class DecideStringUnusual(Node):
         table_pipeline = self.para["table_pipeline"]
         column_name = self.para["column_name"]
         
-        display(HTML(f"{running_spinner_html} Understanding unusual values for <i>{table_pipeline}[{column_name}]</i>"))
+        display(HTML(f"🔍 Understanding unusual values for <i>{table_pipeline}[{column_name}]</i>"))
         create_progress_bar_with_numbers(3, doc_steps)
         show_progress(max_value=total, value=idx)
         
         sample_size = self.class_para.get("sample_size", self.default_sample_size)
 
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        sample_values = run_sql_return_df(con,query)
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
         
         return column_name, sample_values
 
@@ -19837,9 +19517,9 @@ class DecideStringUnusual(Node):
         
         if len(sample_values) == 0:
             return {"Reasoning": "Column is fully missing", "Unusualness": False}
-        sample_values_list = sample_values[column_name].values.tolist()
-        
-        template = f"""{column_name} has the following distinct values: {sample_values_list}
+
+        template = f"""{column_name} has the following distinct values:
+{sample_values.to_csv(index=False, header=False, quoting=1, quotechar="'")}
 
 Review if there are
 1. Any weird characters/typo (e.g., "cofffee") Note that escape characters are expected.
@@ -19902,11 +19582,9 @@ class DecideStringUnusualForAll(MultipleNode):
 
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
+        schema = table_pipeline.get_final_step().get_schema()
         con = self.item["con"]
         database_name = get_database_name(con)
-        
-        schema = table_pipeline.get_schema(con)
-
 
         columns = [col for col in schema if get_reverse_type(schema[col], database_name) =='VARCHAR']
         self.elements = []
@@ -20007,7 +19685,6 @@ models:
 
 
 
-
 class WriteStageYMLCode(Node):
     default_name = 'Write Stage Code'
     default_description = 'This node allows users to write the code for the stage.'
@@ -20033,12 +19710,10 @@ class WriteStageYMLCode(Node):
         contents = []
         table_pipeline = self.para["table_pipeline"]
         old_table_name = table_pipeline.get_source_step().name
-        new_table_name = rename_for_stg(old_table_name)
+        new_table_name = "stg_" + old_table_name.replace("src_", "")
         
         table_name = new_table_name
-        con = self.item["con"]
-        database_name = get_database_name(con)
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         
         columns = list(schema.keys())
         
@@ -20047,7 +19722,7 @@ class WriteStageYMLCode(Node):
         table_object.table_name = table_name
         
         yml_dict = table_object.create_dbt_schema_dict()
-        yml_content = yaml.dump(yml_dict, default_flow_style=False)
+        yml_content = yaml.safe_dump(yml_dict, default_flow_style=False)
         
         formatter = HtmlFormatter(style='default')
         css_style = f"<style>{formatter.get_style_defs('.highlight')}</style>"
@@ -20066,10 +19741,9 @@ class WriteStageYMLCode(Node):
         if "yaml_only" not in self.class_para or not self.class_para["yaml_only"]:
             
             sql_query = f'SELECT * FROM "{table_pipeline}"'
-            final_table_name = table_pipeline.get_final_step().name
-            if final_table_name != new_table_name:
-                step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
-                table_pipeline.add_step_to_final(step)
+            step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
+            step.run_codes()
+            table_pipeline.add_step_to_final(step)
             formatter = HtmlFormatter(style='default')
             css_style = f"<style>{formatter.get_style_defs('.highlight')}</style>"
             combined_css = css_style + border_style
@@ -20081,6 +19755,10 @@ class WriteStageYMLCode(Node):
             labels.append("SQL")
             file_names.append(f"{new_table_name}.sql")
             contents.append(sql_query)
+            
+            
+            con = self.item["con"]
+            database_name = get_database_name(con)
 
             table_pipeline = self.para["table_pipeline"]
             table_object = self.para["table_object"]
@@ -20097,46 +19775,41 @@ class WriteStageYMLCode(Node):
                 bottom_idx += 1
 
             column_document = self.get_sibling_document('Describe Columns')
-            if column_document:
-                column_df = pd.read_json(column_document, orient="split")
-                sample_size = 100
+            column_df = pd.read_json(column_document, orient="split")
+            if len(column_df) > 0:
+                renamed_columns = column_df[column_df['Column'] != column_df['New Column Name']]
+                bottom_html += f"""<h2>📊 {bottom_idx}. Column Rename</h2><br>
+                {"😎 <b>" + str(len(renamed_columns)) + "</b> columns have been renamed" if len(renamed_columns) > 0 else "🤓 No column is renamed"}<br>
+                {column_df.to_html()}<br><br><br>"""
+                bottom_idx += 1
                 
-                if len(column_df) > 0:
-                    renamed_columns = column_df[column_df['Column'] != column_df['New Column Name']]
-                    bottom_html += f"""<h2>📊 {bottom_idx}. Column Rename</h2><br>
-                    {"😎 <b>" + str(len(renamed_columns)) + "</b> columns have been renamed" if len(renamed_columns) > 0 else "🤓 No column is renamed"}<br>
-                    {column_df.to_html()}<br><br><br>"""
-                    bottom_idx += 1
-                    
-                    column_mapping = dict(zip(column_df['New Column Name'], column_df['Column']))
-                    final_columns = table_object.columns
-                    
-                    after_columns = [col for col in final_columns]
-                    after_df = table_pipeline.get_samples(con, columns=after_columns, sample_size=sample_size)
-                    before_selection = ", ".join([f'"{column_mapping[col]}"' for col in final_columns])
-                    before_df = run_sql_return_df(con, f'SELECT {before_selection} FROM "{before_table_name}" LIMIT  100')
-                else:
-                    before_df = run_sql_return_df(con, f'SELECT * FROM "{before_table_name}" LIMIT  100')
-                    after_df =table_pipeline.get_samples(con, sample_size=sample_size)
+                column_mapping = dict(zip(column_df['New Column Name'], column_df['Column']))
+                final_columns = table_object.columns
+                after_selection = ", ".join([f'"{col}"' for col in final_columns])
+                after_df = run_sql_return_df(con, f'SELECT {after_selection} FROM "{after_table_name}" LIMIT  100')
+                before_selection = ", ".join([f'"{column_mapping[col]}"' for col in final_columns])
+                before_df = run_sql_return_df(con, f'SELECT {before_selection} FROM "{before_table_name}" LIMIT  100')
+            else:
+                before_df = run_sql_return_df(con, f'SELECT * FROM "{before_table_name}" LIMIT  100')
+                after_df = run_sql_return_df(con, f'SELECT * FROM "{after_table_name}" LIMIT  100')
                             
             duplication_document = self.get_sibling_document('Decide Duplicate')
-            if duplication_document:
-                duplication_count = duplication_document['duplicate_count']
-                if duplication_count > 0:
-                    duplication_removed = duplication_document['duplicate_removed']
-                    bottom_html += f"""<h2>👯‍♀️ {bottom_idx}. Duplicate</h2><br>
-                    {"🔍 <b>" + str(duplication_count) + "</b> duplicates have been detected" }<br>
-                    {"✔️ Duplicates have been removed" if duplication_removed else "❌ Duplicates have <b>not</b> been removed"}<br><br><br>"""
-                    bottom_idx += 1 
+            duplication_count = duplication_document['duplicate_count']
+            if duplication_count > 0:
+                duplication_removed = duplication_document['duplicate_removed']
+                bottom_html += f"""<h2>👯‍♀️ {bottom_idx}. Duplicate</h2><br>
+                {"🔍 <b>" + str(duplication_count) + "</b> duplicates have been detected" }<br>
+                {"✔️ Duplicates have been removed" if duplication_removed else "❌ Duplicates have <b>not</b> been removed"}<br><br><br>"""
+                bottom_idx += 1 
 
-                trim_document = self.get_sibling_document('Decide Trim')
-                trim_df = pd.read_json(trim_document, orient="split")
-                if len(trim_df) > 0:
-                    trimed_column_count = len(trim_df[trim_df['Trim?']])
-                    bottom_html += f"""<h2>✂️ {bottom_idx}. Leading and Trailing Whitespace</h2><br>
-                    {"🔍 <b>" + str(len(trim_df)) + "</b> columns have leading and trailing whitespace"}<br>
-                    {"✔️ <b>" + str(trimed_column_count) + "</b> columns have been trimmed" if trimed_column_count > 0 else "❌ No column is trimmed"}<br><br><br>"""
-                    bottom_idx += 1
+            trim_document = self.get_sibling_document('Decide Trim')
+            trim_df = pd.read_json(trim_document, orient="split")
+            if len(trim_df) > 0:
+                trimed_column_count = len(trim_df[trim_df['Trim?']])
+                bottom_html += f"""<h2>✂️ {bottom_idx}. Leading and Trailing Whitespace</h2><br>
+                {"🔍 <b>" + str(len(trim_df)) + "</b> columns have leading and trailing whitespace"}<br>
+                {"✔️ <b>" + str(trimed_column_count) + "</b> columns have been trimmed" if trimed_column_count > 0 else "❌ No column is trimmed"}<br><br><br>"""
+                bottom_idx += 1
 
             clean_unusual_document = self.get_sibling_document('Clean Unusual For All')
             if clean_unusual_document:
@@ -20159,46 +19832,44 @@ class WriteStageYMLCode(Node):
                 bottom_html += "</ol><br>"
 
             dmv_document = self.get_sibling_document('Decide Disguised Missing Values For All')
-            if dmv_document:
-                dmv_df = pd.read_json(dmv_document, orient="split")
-                if len(dmv_df) > 0:
-                    dmv_column_count = len(dmv_df[dmv_df["Impute to NULL?"]])
-                    bottom_html += f"""<h2>🕵️‍♂️ {bottom_idx}. Disguised Missing Values</h2><br>
-                    {"🔍 <b>" + str(len(dmv_df)) + "</b> columns have disguised missing values"}<br>
-                    {"✔️ <b>" + str(dmv_column_count) + "</b> columns have been cleaned" if dmv_column_count > 0 else "❌ No column is cleaned"}<br>
-                    {dmv_df.to_html()}<br><br><br>"""
-                    bottom_idx += 1
+            dmv_df = pd.read_json(dmv_document, orient="split")
+            if len(dmv_df) > 0:
+                dmv_column_count = len(dmv_df[dmv_df["Impute to NULL?"]])
+                bottom_html += f"""<h2>🕵️‍♂️ {bottom_idx}. Disguised Missing Values</h2><br>
+                {"🔍 <b>" + str(len(dmv_df)) + "</b> columns have disguised missing values"}<br>
+                {"✔️ <b>" + str(dmv_column_count) + "</b> columns have been cleaned" if dmv_column_count > 0 else "❌ No column is cleaned"}<br>
+                {dmv_df.to_html()}<br><br><br>"""
+                bottom_idx += 1
 
-                transform_document = self.get_sibling_document('Transform Type For All')
-                transform_df = pd.read_json(transform_document, orient="split")
-                if len(transform_df) > 0:
-                    bottom_html += f"""<h2>🔧 {bottom_idx}. Data Type</h2><br>
-                    {"✔️ <b>" + str(len(transform_df)) + "</b> columns have been casted"}<br>
-                    {transform_df.to_html()}<br><br><br>"""
-                    bottom_idx += 1
+            transform_document = self.get_sibling_document('Transform Type For All')
+            transform_df = pd.read_json(transform_document, orient="split")
+            if len(transform_df) > 0:
+                bottom_html += f"""<h2>🔧 {bottom_idx}. Data Type</h2><br>
+                {"✔️ <b>" + str(len(transform_df)) + "</b> columns have been casted"}<br>
+                {transform_df.to_html()}<br><br><br>"""
+                bottom_idx += 1
                     
             missing_document = self.get_sibling_document('Decide Missing Values')
-            if missing_document:
-                missing_df = pd.read_json(missing_document, orient="split")
-                if len(missing_df) > 0:
-                    acceptable_missing_count = len(missing_df[missing_df["Is NULL Acceptable?"]])
-                    bottom_html += f"""<h2>❓ {bottom_idx}. Missing Values</h2><br>
-                    {"🔍 <b>" + str(len(missing_df)) + "</b> columns have missing values"}<br>
-                    {"✔️ <b>" + str(acceptable_missing_count) + "</b> of them are acceptable" if acceptable_missing_count > 0 else "❌ No missing value is acceptable"}<br>
-                    {missing_df.to_html()}<br>"""
-                    
-                    handle_missing_document = self.get_sibling_document('Handle Missing Values')
-                    handle_missing_df = pd.read_json(handle_missing_document, orient="split")
-                    
-                    if len(handle_missing_df) > 0:
-                        bottom_html += f"""🧩 These missing values are handled as follows:<br>
-                        {handle_missing_df.to_html()}<br>"""
-                    bottom_html += "<br><br>"
-                    bottom_idx += 1
+            missing_df = pd.read_json(missing_document, orient="split")
+            if len(missing_df) > 0:
+                acceptable_missing_count = len(missing_df[missing_df["Is NULL Acceptable?"]])
+                bottom_html += f"""<h2>❓ {bottom_idx}. Missing Values</h2><br>
+                {"🔍 <b>" + str(len(missing_df)) + "</b> columns have missing values"}<br>
+                {"✔️ <b>" + str(acceptable_missing_count) + "</b> of them are acceptable" if acceptable_missing_count > 0 else "❌ No missing value is acceptable"}<br>
+                {missing_df.to_html()}<br>"""
+                
+                handle_missing_document = self.get_sibling_document('Handle Missing Values')
+                handle_missing_df = pd.read_json(handle_missing_document, orient="split")
+                
+                if len(handle_missing_df) > 0:
+                    bottom_html += f"""🧩 These missing values are handled as follows:<br>
+                    {handle_missing_df.to_html()}<br>"""
+                bottom_html += "<br><br>"
+                bottom_idx += 1
                 
             column_html = ""        
             column_javascript = ""
-            schema = table_pipeline.get_schema(con)
+            schema = table_pipeline.get_final_step().get_schema()
             
 
             for column in yml_dict["models"][0]["columns"]:
@@ -20226,7 +19897,7 @@ class WriteStageYMLCode(Node):
                 if len(tests) > 0:
                     single_column_html += "<br><br>"
                         
-                html_output, javascript_output = build_column_viz(column_name, is_numeric=is_type_numeric(data_type), con=con, table_name=table_pipeline)
+                html_output, javascript_output = build_column_viz(column_name, is_numeric=is_type_numeric(data_type), con=con, table_name=after_table_name)
                 single_column_html += html_output
                 single_column_html += "<b>📃 Summary:</b> " + column["description"] + "<br>"
                             
@@ -20309,7 +19980,7 @@ class WriteStageYMLCode(Node):
 </script>
 </body>
 </html>"""
-            html_tab = wrap_in_iframe(html_content, width="1000px", height="1000px")
+            html_tab = wrap_in_iframe(html_content, width="1000px")
             tab_data.append(("html", html_tab))
             
             labels.append("HTML")
@@ -20321,15 +19992,12 @@ class WriteStageYMLCode(Node):
     
         
         if "dbt_directory" in self.para:
-            if not os.path.exists(os.path.join(self.para["dbt_directory"], "stage")):
-                os.makedirs(os.path.join(self.para["dbt_directory"], "stage"))
             file_names = [os.path.join(self.para["dbt_directory"], "stage", file_name) for file_name in file_names]
        
         create_progress_bar_with_numbers(4, doc_steps)
         display(HTML(f"🎉 Congratulations! Below is the stage codes."))
         display(tabs)
         overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-        save_files_click(save_button)  
         
         def on_button_clicked(b):
             clear_output(wait=True)
@@ -20360,6 +20028,7 @@ class WriteStageYMLCode(Node):
         
         
         display(submit_button)
+        
 
 def create_stage_workflow(table_name, con, viewer=True):
     query_widget = QueryWidget(con)
@@ -20406,41 +20075,36 @@ class CreateShortTableSummary(Node):
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
         
-        display(HTML(f"{running_spinner_html} Generating table summary for <i>{table_pipeline}</i>..."))
+        display(HTML(f"📝 Generating table summary for <i>{table_pipeline}</i>..."))
         create_progress_bar_with_numbers(0, doc_steps)
         self.progress = show_progress(1)
         
         sample_size = 5
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
-        sample_df = table_pipeline.get_samples(con, columns=columns, sample_size=sample_size)
+        all_columns = ', '.join(f'"{col}"' for col in columns)
+        sample_df = run_sql_return_df(con, f'SELECT {all_columns} FROM "{table_pipeline}" LIMIT {sample_size}')
         table_desc = sample_df.to_csv(index=False, quoting=1)
 
         self.sample_df = sample_df
-        source_name =  table_pipeline.get_source_step().name
 
-        return table_pipeline, table_desc, source_name
+        return f"{table_pipeline}", table_desc
     
     def run(self, extract_output, use_cache=True):
-        table_name, table_desc, source_name = extract_output
+        table_name, table_desc = extract_output
 
-        template = f"""You have the table '{source_name}' with samples:
+        template = f"""You have the table '{table_name}' with samples:
 {table_desc}
 
-Summarize the table. If it is a relation with multiple entities, explains how they are related.
-If it has single entity, explains what the details are
+Summarize the table. Start with the big picture. Then explain what are the details mentioned.
 
 Example: 
-The table is the xx relation between abc...
-The table is about x, with details of ...
-
+The table is about ... It discusses customers and their orders.
 Now, your summary in short simple SVO sentences and < 500 chars
 Return in the following format:
 ```yml
-reasoning: It has single entity/multiple enities ...
-table_summary: >-
-    The table is about the orders made by customers...
+table_summary: "The table is about ... It discusses customers and their orders."
 ```
 """
 
@@ -20453,7 +20117,7 @@ table_summary: >-
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         return summary["table_summary"]
     
     def run_but_fail(self, extract_output, use_cache=True):
@@ -20466,7 +20130,7 @@ table_summary: >-
 
         self.progress.value += 1
 
-        table_name, _, _ = extract_output
+        table_name, _ = extract_output
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_name)
@@ -20512,16 +20176,15 @@ class SelectMainVocabularyTable(Node):
         
         tables = get_table_names(con)
         
-        display(HTML(f"""🧐 There are {len(tables)} tables in your database.<br>
-🤓 Please select the <b>main table</b> and <b>vocabulary table</b>.<br>
-Each row in the <b>main table</b> will be mapped to vocabulary.<br>
-If unsure, choose the smaller table as the <b>main table</b>.<br><br>
-<b>Main Table:</b>"""))
+        print(f"🧐 There are {len(tables)} tables in your database.")
+        print(f"🤓 Please select the {BOLD}main table{END} and {BOLD}vocabulary table{END}.")
+        print(f"Each row in the {BOLD}main table{END} will be mapped to vocabulary.")
+        print(f"If unsure, choose the smaller table as the {BOLD}main table{END}.")
         
-
+        print(f"{BOLD}Main Table:{END}", flush=True)
         dropdown =  create_explore_button(query_widget, table_name=tables)
         
-        display(HTML("<b>Vocabulary Table:</b>"))
+        print(f"{BOLD}Vocabulary Table:{END}")
         dropdown_vocabulary = create_explore_button(query_widget, table_name=tables)
 
         next_button = widgets.Button(description="Next", button_style='success')
@@ -20729,7 +20392,7 @@ class SelectTable(Node):
             on_button_click(next_button)
             return
         
-        display(HTML(f"🤓 Please select the mode:"))
+        print(f"🤓 Please select the mode:")
         display(mode_selector)
         display(next_button)
         
@@ -20757,9 +20420,10 @@ def create_cocoon_stage_workflow(con, query_widget=None, viewer=False, table_nam
                             para = workflow_para)
     
     main_workflow.add_to_leaf(SelectTable())
+    main_workflow.add_to_leaf(DecideColumnsPattern())
     main_workflow.add_to_leaf(DecideProjection())
-    main_workflow.add_to_leaf(CreateShortTableSummary())
-    main_workflow.add_to_leaf(DescribeColumnsList())
+    main_workflow.add_to_leaf(CreateShortTableSummaryContinue())
+    main_workflow.add_to_leaf(DescribeColumnsListAndTableSummary())
     main_workflow.add_to_leaf(DecideDuplicate())
     main_workflow.add_to_leaf(DecideTrim())
     main_workflow.add_to_leaf(DecideStringUnusualForAll())
@@ -20769,9 +20433,6 @@ def create_cocoon_stage_workflow(con, query_widget=None, viewer=False, table_nam
     
     main_workflow.add_to_leaf(DecideRegexForAll())
     main_workflow.add_to_leaf(TransformTypeForAll())
-    
-    main_workflow.add_to_leaf(DecideVariantTypes())
-    
     main_workflow.add_to_leaf(DecideMissingList())
     main_workflow.add_to_leaf(HandleMissing())
     main_workflow.add_to_leaf(DecideUnique())
@@ -20785,9 +20446,11 @@ def create_cocoon_stage_workflow(con, query_widget=None, viewer=False, table_nam
 
 
 
+
     
 
-def create_cocoon_data_vault_workflow(con, query_widget=None, viewer=False, dbt_directory="./dbt_directory", para={}):
+def create_cocoon_data_vault_workflow(con, query_widget=None, viewer=False):
+
     if query_widget is None:
         query_widget = QueryWidget(con)
 
@@ -20795,37 +20458,21 @@ def create_cocoon_data_vault_workflow(con, query_widget=None, viewer=False, dbt_
         "con": con,
         "query_widget": query_widget
     }
-    
-    workflow_para = {"data_project": DataProject(),
-                     "dbt_directory": dbt_directory}
-    
-    for key, value in para.items():
-        workflow_para[key] = value
 
     main_workflow = Workflow("Data Vault Workflow", 
                             item = item, 
                             description="A workflow to build data vault",
-                            para = workflow_para)
-    
-    main_workflow.add_to_leaf(DBTProjectConfig())
-    main_workflow.add_to_leaf(SelectTables())
+                            para = {"data_project": DataProject(),
+                                    "dbt_directory": "./"})
+
+    main_workflow.add_to_leaf(SelectTables(viewer=True))
+    main_workflow.add_to_leaf(SourceProjectStoryUnderstanding())
+    main_workflow.add_to_leaf(SourceTableUnderstand())
     main_workflow.add_to_leaf(StageForAll())
-
-    main_workflow.add_to_leaf(DecideSCDForAll())
-    main_workflow.add_to_leaf(PerformSCDForAll())
-    main_workflow.add_to_leaf(DecideKeysForAll())
-    main_workflow.add_to_leaf(RefinePK())
-    
-    main_workflow.add_to_leaf(ConnectPKFKTable())
-    main_workflow.add_to_leaf(DisplayJoinGraph())
-
-    main_workflow.add_to_leaf(EntityUnderstanding())
-    main_workflow.add_to_leaf(RelationUnderstandingForAll())
-    main_workflow.add_to_leaf(ReorderRelationToStory())
-    main_workflow.add_to_leaf(BuildERStory())
-    main_workflow.add_to_leaf(DocumentProject())
-
+    main_workflow.add_to_leaf(DecidePKforAll())
+    main_workflow.add_to_leaf(DecideFKForAll())
     return query_widget, main_workflow
+
 
 class DescribeColumnsList(ListNode):
     default_name = 'Describe Columns'
@@ -20836,14 +20483,14 @@ class DescribeColumnsList(ListNode):
 
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
-        display(HTML(f"{running_spinner_html} Checking columns for <i>{table_pipeline}</i>..."))
+        display(HTML(f"🔍 Checking columns for <i>{table_pipeline}</i>..."))
         
         create_progress_bar_with_numbers(0, doc_steps)
         self.progress = show_progress(1)
 
         self.input_item = item
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         sample_size = 5
         
@@ -20855,7 +20502,8 @@ class DescribeColumnsList(ListNode):
         
         for i in range(0, len(columns), 30):
             chunk_columns = columns[i:i + 30]
-            sample_df = table_pipeline.get_samples(con, columns=chunk_columns, sample_size=sample_size)
+            selection_clause = ", ".join(f'"{col}"' for col in chunk_columns)
+            sample_df = run_sql_return_df(con, f'SELECT {selection_clause} FROM "{table_pipeline}" LIMIT {sample_size}')
             table_desc = sample_df.to_csv(index=False, quoting=1)
             outputs.append((table_desc, table_summary, chunk_columns))
         
@@ -20924,8 +20572,7 @@ Return in the following format:
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_pipeline)
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
 
         rows_list = []
 
@@ -20984,18 +20631,11 @@ Return in the following format:
             renamed = (new_df["Column"] != new_df["New Column Name"]).any()
             
             if renamed:
-                duplicates = new_df["New Column Name"].duplicated(keep=False)
-                
-                if duplicates.any():
+                if new_df["New Column Name"].duplicated().any():
                     print(f"⚠️ Please provide unique names for the columns. The following columns have duplicated names:")
-                    duplicate_names = new_df[duplicates]["New Column Name"].unique()
-                    print(", ".join(duplicate_names))
-                    
-                    if self.viewer or ("viewer" in self.para and self.para["viewer"]):
-                        new_df.loc[duplicates, "New Column Name"] = new_df.loc[duplicates, "Column"]
-                        print("Duplicated names have been reset to their original values.")
-                    else:
-                        return
+                    duplicate_names = new_df[new_df["New Column Name"].duplicated()]
+                    print(", ".join(duplicate_names["New Column Name"].tolist()))
+                    return
 
 
                 new_table_name = f"{table_pipeline}_renamed"
@@ -21008,16 +20648,16 @@ Return in the following format:
                     
                     if old_name != new_name:
                         comment += f"-- {old_name} -> {new_name}\n"
-                        selection_clauses.append(f'"{old_name}" AS "{new_name}"')
+                        selection_clauses.append(f"{old_name} AS {new_name}")
                     else:
-                        selection_clauses.append(f'"{old_name}"')
+                        selection_clauses.append(f"{old_name}")
                 
                 selection_clause = ',\n'.join(selection_clauses)
-                sql_query = f'SELECT \n{indent_paragraph(selection_clause)}\nFROM "{table_pipeline}"'
+                sql_query = f"SELECT \n{indent_paragraph(selection_clause)}\nFROM {table_pipeline}"
                 sql_query = comment + sql_query
-                
                 con = self.item["con"]
                 step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
+                step.run_codes()
                 table_pipeline.add_step_to_final(step)
             
             document = new_df.to_json(orient="split")
@@ -21046,28 +20686,28 @@ class DecideMissingList(ListNode):
         table_pipeline = self.para["table_pipeline"]
         table_name = table_pipeline.get_final_step().name
 
-        display(HTML(f"{running_spinner_html} Checking missing values for <i>{table_name}</i>..."))
+        display(HTML(f"🔍 Checking missing values for <i>{table_name}</i>..."))
         create_progress_bar_with_numbers(2, doc_steps)
         self.progress = show_progress(1)
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         columns = sorted(columns)
         sample_size = 5
         
-        with_context = table_pipeline.get_codes(mode="WITH")
         outputs = []
                 
         for i in range(0, len(columns), 50):
             chunk_columns = columns[i:i + 50]
+            
             missing_columns = {}
             
             for col in chunk_columns:
-                missing_percentage = get_missing_percentage(con, table_name, col, with_context=with_context)
+                missing_percentage = get_missing_percentage(con, table_name, col)
                 if missing_percentage > 0:
                     missing_columns[col] = missing_percentage
-                    
-            sample_df = table_pipeline.get_samples(con, columns=chunk_columns, sample_size=sample_size)
+            selection_clause = ", ".join(f'"{col}"' for col in chunk_columns)
+            sample_df = run_sql_return_df(con, f'SELECT {selection_clause} FROM "{table_name}" LIMIT {sample_size}')
             sample_df_str = sample_df.to_csv(index=False, quoting=1)
             
             outputs.append((missing_columns, sample_df_str))
@@ -21222,11 +20862,11 @@ class DecideDataTypeList(ListNode):
         
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
-        display(HTML(f"{running_spinner_html} Checking data types for <i>{table_pipeline}</i>..."))
+        display(HTML(f"🔍 Checking data types for <i>{table_pipeline}</i>..."))
         create_progress_bar_with_numbers(1, doc_steps)
         self.progress = show_progress(1)
 
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         columns = sorted(columns)
         sample_size = 5
@@ -21238,7 +20878,8 @@ class DecideDataTypeList(ListNode):
                 
         for i in range(0, len(columns), 30):
             chunk_columns = columns[i:i + 30]
-            sample_df = table_pipeline.get_samples(con, columns=chunk_columns, sample_size=sample_size)
+            selection_clause = ", ".join(f'"{col}"' for col in chunk_columns)
+            sample_df = run_sql_return_df(con, f'SELECT {selection_clause} FROM "{table_pipeline}" LIMIT {sample_size}')
             table_desc = sample_df.to_csv(index=False, quoting=1)
             chunk_schema = {col: schema[col] for col in chunk_columns}
             outputs.append((table_desc, all_data_types, database_name, chunk_schema))
@@ -21459,13 +21100,12 @@ class CocoonBranchStep(Node):
         "✨ <b>Clean:</b> Give us a table, we'll clean and document it.",
         "🔍 <b>Profile:</b> Give us a table, we'll identify anomalies.",
         "🔗 <b>Standardization:</b> Give us a vocabulary, we will standardize tables.",
-        "🧩 <b>(Preview) Model:</b> Give us a database, we'll model it.",
         "🔧 <b>(Preview) Transform:</b> Give us source/target tables, we will transform.",
         "🔬 <b>(Preview) Pipeline Understanding:</b> Give us a  Pipeline, we'll interpret it.",
         ]
         coming_labels = [
         "🔄 <b>(Coming Soon) Integrate:</b> Give us tables, we'll integrate them.",
-        
+        "🧩 <b>(Coming Soon) Model:</b> Give us a database, we'll model it.",
         "🛠️ <b>(Coming Soon) Pipeline Maintenance:</b> Give us a broken Pipeline, we'll repair it.",
         "📈 <b>(Coming Soon) Semantic:</b> Give us a database, we'll build metrics.",
         ]
@@ -21474,7 +21114,6 @@ class CocoonBranchStep(Node):
             "Data Stage Workflow",
             "Data Profiling Workflow",
             "Fuzzy Join Workflow",
-            "Data Vault Workflow",
             "Single Table Transformation Workflow",
             "DBT Project Explore Workflow",
         ]
@@ -21489,17 +21128,12 @@ class CocoonBranchStep(Node):
         
         def on_button_click(b):
             selected_index = get_selected_index(checkboxes)
-            
-            if selected_index is None:
-                print("⚠️ Please select one option")
-                return
-            
             callback({"next_node": next_nodes[selected_index]})
 
         next_button.on_click(on_button_click)
         display(next_button)
         
-def create_cocoon_workflow(con, para = {}):
+def create_cocoon_workflow(con):
     
     item = {}
     query_widget = None
@@ -21517,12 +21151,12 @@ def create_cocoon_workflow(con, para = {}):
     main_workflow.add_to_leaf(branch_node)
     
 
-    _, stage_workflow = create_cocoon_stage_workflow(con=con, query_widget=query_widget, para=para)
+    _, stage_workflow = create_cocoon_stage_workflow(con=con, query_widget=query_widget)
     _, profile_workflow = create_cocoon_profile_workflow(con=con, query_widget=query_widget)
     _, fuzzy_join_workflow = create_matching_workflow(con=con, query_widget=query_widget)    
     dbt_explore_workflow = create_cocoon_dbt_explore_workflow()
     _, table_transform_workflow = create_cocoon_table_transform_workflow(con=con, query_widget=query_widget)
-    _, data_vault_workflow = create_cocoon_data_vault_workflow(con=con, query_widget=query_widget, para=para)
+    _, data_vault_workflow = create_cocoon_data_vault_workflow(con=con, query_widget=query_widget)
     
     main_workflow.register(stage_workflow, parent=branch_node)
     main_workflow.register(profile_workflow, parent=branch_node)
@@ -21556,7 +21190,7 @@ patterns:
     response = call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
     messages.append(response['choices'][0]['message'])
     yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-    summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+    summary = yaml.safe_load(yml_code)
     return summary
 
 
@@ -21572,8 +21206,7 @@ class DecideColumnsPattern(Node):
         self.progress = show_progress(1)
 
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         columns = sorted(columns)
         
@@ -22159,7 +21792,7 @@ class CreateShortSourceTableSummary(CreateShortTableSummary):
         source_table = self.get_sibling_document('Select Source and Target Table')["source_table"]
         sample_size = 5
 
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{source_table}" LIMIT {sample_size}')
+        sample_df = run_sql_return_df(con, f"SELECT * FROM {source_table} LIMIT {sample_size}")
         table_desc = sample_df.to_csv(index=False, quoting=1)
         
         self.sample_df = sample_df
@@ -22181,7 +21814,7 @@ class CreateShortTargetTableSummary(CreateShortTableSummary):
         target_table = self.get_sibling_document('Select Source and Target Table')["target_table"]
         sample_size = 5
 
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{target_table}" LIMIT {sample_size}')
+        sample_df = run_sql_return_df(con, f"SELECT * FROM {target_table} LIMIT {sample_size}")
         table_desc = sample_df.to_csv(index=False, quoting=1)
 
         self.sample_df = sample_df
@@ -22215,10 +21848,10 @@ class UnderstandSourceToTargetTransform(Node):
         source_table = source_table_object.table_name
         target_table = target_table_object.table_name
 
-        source_sample_df = run_sql_return_df(con, f'SELECT * FROM "{source_table}" LIMIT {sample_size}')
+        source_sample_df = run_sql_return_df(con, f"SELECT * FROM {source_table} LIMIT {sample_size}")
         source_table_desc = source_sample_df.to_csv(index=False, quoting=1)
         
-        target_sample_df = run_sql_return_df(con, f'SELECT * FROM "{target_table}" LIMIT {sample_size}')
+        target_sample_df = run_sql_return_df(con, f"SELECT * FROM {target_table} LIMIT {sample_size}")
         target_table_desc = target_sample_df.to_csv(index=False, quoting=1)
         
         source_column_desc = source_table_object.print_column_desc()
@@ -22370,10 +22003,10 @@ class WriteCode(Node):
         source_table = source_table_object.table_name
         target_table = target_table_object.table_name
 
-        source_sample_df = run_sql_return_df(con, f'SELECT * FROM "{source_table}" LIMIT {sample_size}')
+        source_sample_df = run_sql_return_df(con, f"SELECT * FROM {source_table} LIMIT {sample_size}")
         source_table_sample = source_sample_df.to_csv(index=False, quoting=1)
         
-        target_sample_df = run_sql_return_df(con, f"""SELECT {', '.join(f'"{col}"' for col in target_columns)} FROM "{target_table}" LIMIT {sample_size}""")
+        target_sample_df = run_sql_return_df(con, f"SELECT {', '.join(target_columns)} FROM {target_table} LIMIT {sample_size}")
         target_table_sample = target_sample_df.to_csv(index=False, quoting=1)    
         
         source_column_desc = source_table_object.print_column_desc()
@@ -22459,7 +22092,7 @@ class DebugCode(Node):
     def extract(self, input_item):
         clear_output(wait=True)
         create_progress_bar_with_numbers(1, transform_steps)
-        display(HTML(f"{running_spinner_html} Debugging the code..."))
+        display(HTML("🐞 Debugging the code..."))
         self.progress = show_progress(1)
         
         con = self.item["con"]
@@ -22578,7 +22211,6 @@ FROM {run_output['source_table']}
         
         
             
-
 class DecideStringCategoricalForAll(MultipleNode):
     default_name = 'Decide If Categorical For All'
     default_description = 'This node allows users to decide if a string column should be free text or categorical.'
@@ -22594,11 +22226,9 @@ class DecideStringCategoricalForAll(MultipleNode):
 
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
+        schema = table_pipeline.get_final_step().get_schema()
         con = self.item["con"]
         database_name = get_database_name(con)
-        
-        schema = table_pipeline.get_schema(con)
-
 
         columns = [col for col in schema if get_reverse_type(schema[col], database_name) =='VARCHAR']
         self.elements = []
@@ -22700,11 +22330,11 @@ class DecideStringCategoricalForAll(MultipleNode):
             return
             
         
-        display(HTML(f"😎 Please verify column accepted values. We will add column tests:"))
+        display(HTML(f"😎 We have detected categorical columns. Please verify its domain:"))
         display(grid)
         display(HBox([reject_button, next_button]))
-        
-        
+
+
 class DecideStringCategoricalForAllContinue(DecideStringCategoricalForAll):
     def display_after_finish_workflow(self, callback, document):
         clear_output(wait=True)
@@ -22805,22 +22435,19 @@ class VerifyTests(Node):
             on_button_clicked(next_button)
             return
         
-
+    
 class DecideStringCategorical(Node):
     default_name = 'Decide If Categorical'
     default_description = 'This node allows users to decide if a string column should be free text or categorical.'
-    default_sample_size = 30
+    default_sample_size = 50
 
     def extract(self, input_item):
         clear_output(wait=True)
         con = self.item["con"]
         table_pipeline = self.para["table_pipeline"]
-        table_object = self.para["table_object"]
-        
         column_name = self.para["column_name"]
-        column_desc = table_object.column_desc.get(column_name, "")
         
-        display(HTML(f"{running_spinner_html} Detecting category for <i>{table_pipeline}[{column_name}]</i>..."))
+        display(HTML(f"🔍 Detecting category for <i>{table_pipeline}[{column_name}]</i>..."))
         create_progress_bar_with_numbers(3, doc_steps)
 
         idx = self.para["column_idx"]
@@ -22831,20 +22458,14 @@ class DecideStringCategorical(Node):
         
         sample_size = self.class_para.get("sample_size", self.default_sample_size)
 
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        sample_values = run_sql_return_df(con,query)
-        
-        query =  construct_distinct_count_query(table_pipeline, column_name)
-        query = with_context + "\n" + query
-        total_distinct_count = run_sql_return_df(con,query).iloc[0, 0]
-        
-        return column_name, column_desc, sample_values, sample_size, total_distinct_count
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
+        total_distinct_count = count_total_distinct(con, table_pipeline, column_name)
+
+        return column_name, sample_values, sample_size, total_distinct_count
 
 
     def run(self, extract_output, use_cache=True):
-        column_name, column_desc, sample_values, sample_size, total_distinct_count = extract_output
+        column_name, sample_values, sample_size, total_distinct_count = extract_output
         
         if len(sample_values) == 0:
             return {"explanation": "Column is fully missing", "can_enumerate": False}
@@ -22852,33 +22473,24 @@ class DecideStringCategorical(Node):
         if sample_size < total_distinct_count:
             return {"explanation": "The column has too many distinct values.", "can_enumerate": False}
 
+        template = f"""{column_name} has the following distinct values:
+{sample_values.to_csv(index=False, header=False, quoting=1, quotechar="'")}
 
-
-        
-        template = f"""{column_name} is: {column_desc}
-        
-The CURRENT DOMAIN: {sample_values.to_csv(index=False, header=False, quoting=1, quotechar="'")}
-
-Task: from CURRENT DOMAIN, extrapolate FULL DOMAIN of all possible values
-
-First, check if the potential FULL DOMAIN has
-(1) a limited domain size (<{sample_size}) 
-(2) well-know values you CAN enumerate.
-If so, enumerate the FULL DOMAIN:
+Review if the column is categorical with a limited domain of acceptable values that you CAN enumerate.
+If so, enumerate the FULL domain with Jinja template. E.g.,
+[{{% for i in range(1, 10) %}}'x_{{{{ i }}}}'{{% if not loop.last %}},{{% endif %}}{{% endfor %}}]
+['cat', 'dog', 'fish', 'mom\\'s hat'] # note how to escape!
 
 Now, respond in yml:
 ```yml
 explanation: >
-    The column means ... The CURRENT DOMAIN contains ...
-    The FULL DOMAIN will contains X elements, which is above/below {sample_size}
-    The domain values are (not) well known to enumerate
-limited_size: true/false # depend on whether below/above {sample_size}
-well_known: true/false # are the values well known?
-current_full: true/false # if both above are true, is the current domain full
-full_domain: # only if limited_size, well_known, and not current_full
-    - '%'
-    - "O'Neil"
-    - ...
+    The column means ... The domain contains... 
+    The full domain follows ... pattern. It cannot/can be fully enumerated by Jinja that ...
+can_enumerate: true/false
+current_full: true/false # if categorical is true, are the current distinct values already the full domain? 
+# Jinja template that creates a list, to the best of you knowledge, WITHOUT referencing any var
+full_domain: >
+    [{{% for i in range(1, 10) %}}'x_{{{{ i }}}}'{{% if not loop.last %}},{{% endif %}}{{% endfor %}}] 
 ```"""
 
         messages = [{"role": "user", "content": template}]
@@ -22887,44 +22499,49 @@ full_domain: # only if limited_size, well_known, and not current_full
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
             (lambda jc: "explanation" in jc, "The 'explanation' key is missing in the JSON code."),
-            (lambda jc: "limited_size" in jc, "The 'can_enumerate' key is missing in the JSON code."),
-            (lambda jc: "well_known" in jc, "The 'can_enumerate' key is missing in the JSON code."),
-            (lambda jc: isinstance(jc["limited_size"], bool), "The value of 'can_enumerate' must be a boolean."),
-            (lambda jc: isinstance(jc["well_known"], bool), "The value of 'can_enumerate' must be a boolean."),
-
+            (lambda jc: "can_enumerate" in jc, "The 'can_enumerate' key is missing in the JSON code."),
+            (lambda jc: isinstance(jc["can_enumerate"], bool), "The value of 'can_enumerate' must be a boolean."),
+            (lambda jc: "current_full" in jc if jc["can_enumerate"] else True, "The 'current_full' key is missing when 'can_enumerate' is True."),
+            (lambda jc: isinstance(jc["current_full"], bool) if "current_full" in jc else True, "The value of 'current_full' must be a boolean."),
+            (lambda jc: "full_domain" in jc if jc.get("current_full") is False and jc["can_enumerate"] else True, "The 'full_domain' key is missing when 'current_full' is False and 'can_enumerate' is True."),
         ]
 
         for check, error_message in checks:
             if not check(summary):
                 raise ValueError(f"Validation failed: {error_message}")
         
-        if summary["limited_size"] and summary["well_known"]:
-            summary["can_enumerate"] = True
-        else:
-            summary["can_enumerate"] = False
-        
         summary["domain"] = sample_values[column_name].tolist()
         
+        if "full_domain" in summary:
+            full_domain = summary["full_domain"]
             
-        
-        if (not summary["can_enumerate"]) or summary["current_full"]:
-            summary["full_domain"] = []
+            if isinstance(full_domain, list):
+                pass
+            elif full_domain.strip() == "":
+                full_domain = []
+            elif full_domain.strip().startswith("#"):
+                full_domain = []
+            else:
+                full_domain = evaluate_jinja(full_domain)
+                if not isinstance(full_domain, list):
+                    raise ValueError("The 'full_domain' must be a list.")
+                summary["full_domain"] = full_domain
         
         if "full_domain" in summary and len(summary["full_domain"]) == 0 :
             summary["current_full"] = True
             
-        if "full_domain" in summary and len(summary["full_domain"]) > 100:
+        if len(summary["full_domain"]) > 100:
             summary["can_enumerate"] = False
-            summary["explanation"] = "The domain is too large to enumerate."
+            summary["explanation"] += "The domain is too large to enumerate."
             del summary["full_domain"]
             del summary["current_full"]
             
-        if "full_domain" in summary and summary["can_enumerate"] and not summary["current_full"]:
+        if "full_domain" in summary and summary["can_enumerate"]:
             missing_values = set(summary["domain"]) - set(summary["full_domain"])
             if missing_values:
                 summary["full_domain"].extend(list(missing_values))
@@ -22949,70 +22566,23 @@ class SelectTables(Node):
         query_widget = self.item["query_widget"]
         
         tables = get_table_names(con)
-        selected = None
-        
-        if "dbt_directory" in self.para:
-            try:
-                dbt_directory = self.para["dbt_directory"]
-                sources_file = os.path.join(dbt_directory, "sources.yml")
-                
-                if os.path.exists(sources_file):
-                    with open(sources_file, 'r') as file:
-                        yml_content = yaml.safe_load(file)
-                        
-                    if yml_content and 'sources' in yml_content:
-                        for source in yml_content['sources']:
-                            if 'tables' in source:
-                                selected = source['tables']
-                                break
-                
-                if selected:
-                    print(f"🤓 Found {len(selected)} previously selected tables in sources.yml")
-                    
-            except Exception as e:
-                print(f"Error reading sources.yml: {str(e)}. No tables pre-selected.")
-                selected = None
         
         print(f"🧐 There are {len(tables)} tables in your database. You can explore them:")
         dropdown = create_explore_button(query_widget, table_name=tables)
         
         print(f"🤓 Please select the tables:")
-        multi_select = create_column_selector_(columns=tables, default=False, selected=selected)
+        multi_select = create_column_selector_(columns=tables, default=True)
         
         next_button = widgets.Button(description="Next", button_style='success')
 
         def on_button_click(b):
-            table_names = []
             selected_tables = multi_select.value
             data_project = self.para["data_project"]
             for table_id in selected_tables:
                 table_name = tables[table_id]
-                table_names.append(table_name)
                 data_project.add_table(table_name, get_table_schema(con, table_name))
-            
-            
-            if "dbt_directory" in self.para:
-                yml_dict = OrderedDict()
-                yml_dict["version"] = 2
-                yml_dict["sources"] = []
-                yml_dict["sources"].append(OrderedDict({
-                    "name": "cocoon",
-                    "tables": table_names
-                }))
                 
-                yml_content = yaml.dump(yml_dict, default_flow_style=False)
-                labels = ["YAML"]
-                file_names = [os.path.join(self.para["dbt_directory"], "sources.yml")]
-                contents = [yml_content]
-                
-                if not os.path.exists(self.para["dbt_directory"]):
-                    os.makedirs(self.para["dbt_directory"])
-                
-                overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-                overwrite_checkbox.value = True
-                save_files_click(save_button)  
-            
-            callback({"selected_tables": table_names})
+            callback({"selected_tables": selected_tables})
                 
         next_button.on_click(on_button_click)
         display(next_button)
@@ -23020,7 +22590,7 @@ class SelectTables(Node):
         if self.viewer or ("viewer" in self.para and self.para["viewer"]):
             on_button_click(next_button)
             return
-        
+
 class StageTablesForAll(MultipleNode):
     default_name = 'Stage Tables For All'
     default_description = 'This node stages the tables for all selected tables.'
@@ -23057,7 +22627,8 @@ class StageTablesForAll(MultipleNode):
         self.nodes = {}
 
         idx = 0
-        for table_name in selected_tables:
+        for table_id in selected_tables:
+            table_name = get_table_names(self.input_item["con"])[table_id]
             self.elements.append(table_name)
             self.nodes[table_name] = self.construct_node(table_name, idx, len(selected_tables))
             idx += 1
@@ -23536,7 +23107,7 @@ class DecideTableHubRelation(Node):
         hubs = hub_df["Hub"].tolist()
         
         sample_size = 5
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{table_name}" LIMIT {sample_size}')
+        sample_df = run_sql_return_df(con, f"SELECT * FROM {table_name} LIMIT {sample_size}")
         table_desc = sample_df.to_csv(index=False, quoting=1)
 
         return table_name, table_desc, hub_desc, hubs
@@ -23569,7 +23140,7 @@ description: A do B, C do D... # leave empty if contain_hubs < 2
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
@@ -23646,7 +23217,7 @@ reference_tables:
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
@@ -23777,7 +23348,7 @@ similar_links:
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
@@ -24013,13 +23584,13 @@ class DecideFunctionalDependencyForAll(MultipleNode):
 
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         table_name = table_pipeline.get_final_step().name
         all_columns = list(schema.keys())
+        con = self.item["con"]
         
         sql_query = generate_count_distinct_query(table_name, all_columns)
+
         distinct_count_df = run_sql_return_df(con, sql_query)
 
         distinct_count_df = distinct_count_df.loc[:, (distinct_count_df.iloc[0] < 0.1) & (distinct_count_df.iloc[0] > 0)]
@@ -24098,8 +23669,11 @@ class DecideFunctionalDependency(Node):
     def extract(self, input_item):
         clear_output(wait=True)
 
+        print("🔍 Detecting functional dependencies...")
+        
         idx = self.para["column_idx"]
         total = self.para["total_columns"]
+        show_progress(max_value=total, value=idx)
 
         self.input_item = input_item
 
@@ -24110,9 +23684,6 @@ class DecideFunctionalDependency(Node):
         all_columns = list(table_pipeline.get_final_step().get_schema().keys())
         table_summary = self.get_multi_node_parent_sibling_document("Create Short Table Summary")
         
-        display(HTML(f"{running_spinner_html} Detecting functional dependencies for <i>{column_name}</i>..."))
-        show_progress(max_value=total, value=idx)
-
         decide_column_candidates = []
         decide_columns = [c for c in all_columns if c != column_name]
 
@@ -24155,7 +23726,7 @@ one_one_columns: [column1, column2, ...]
         self.messages.append(messages)
         
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
+        summary = yaml.safe_load(yml_code)
         
         checks = [
             (lambda jc: isinstance(jc, dict), "The returned JSON code is not a dictionary."),
@@ -24185,7 +23756,6 @@ one_one_columns: [column1, column2, ...]
         table_pipeline = self.para["table_pipeline"]
         table_name = table_pipeline.get_final_step().name
         all_columns = list(table_pipeline.get_final_step().get_schema().keys())
-        con = self.item["con"]
         
         repair_selection_clauses = {}
         
@@ -24195,10 +23765,10 @@ one_one_columns: [column1, column2, ...]
             
             def create_repair_pair_sql(table_name, groupby, decide_col):
                 sql = f"""SELECT {groupby}, mode({decide_col}) AS {decide_col}
-FROM {table_name}
-WHERE {groupby} IS NOT NULL
-GROUP BY {groupby}
-HAVING count(distinct(coalesce({decide_col}, 'NULL'))) > 1"""
+            FROM {table_name}
+            WHERE {groupby} IS NOT NULL
+            GROUP BY {groupby}
+            HAVING count(distinct(coalesce({decide_col}, 'NULL'))) > 1"""
 
                 return sql
 
@@ -24211,22 +23781,10 @@ HAVING count(distinct(coalesce({decide_col}, 'NULL'))) > 1"""
             def create_repair_selection_str(df, groupby, decide_col):
                 selection_str = "CASE\n"
                 for i, row in df.iterrows():
-                    def escape_value(value):
-                        if isinstance(value, (int, float)):
-                            return value
-                        elif isinstance(value, str):
-                            return value.replace("''", "'").replace("'", "''")
-                        else:
-                            return str(value)
+                    old_value = row[groupby].replace("''", "'").replace("'", "''")
+                    new_value = row[decide_col].replace("''", "'").replace("'", "''")
+                    selection_str += f"    WHEN {groupby} = '{old_value}' THEN '{new_value}'\n"
 
-                    old_value = escape_value(row[groupby])
-                    new_value = escape_value(row[decide_col])
-
-                    if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
-                        selection_str += f"    WHEN {groupby} = {old_value} THEN {new_value}\n"
-                    else:
-                        selection_str += f"    WHEN {groupby} = '{old_value}' THEN '{new_value}'\n"
-                
                 selection_str += f"    ELSE {decide_col}\n"
                 selection_str += "END AS " + decide_col
 
@@ -24258,7 +23816,7 @@ FROM {table_pipeline}"""
         comment += f"-- {groupby} -> {', '.join(summary['one_one_columns'])}\n"
         
         step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=self.item["con"])
-        step.run_codes(mode="TABLE")
+        step.run_codes()
 
         table_pipeline.add_step_to_final(step)
         
@@ -24291,7 +23849,7 @@ class SourceProjectStoryUnderstanding(Node):
         clear_output(wait=True)
 
         create_progress_bar_with_numbers(0, model_steps)
-        display(HTML(f"{running_spinner_html} Generating the story of the project ..."))
+        display(HTML(f"🤓 Generating the story of the project ..."))
         self.progress = show_progress(1)
 
         data_project = self.para["data_project"]
@@ -24377,7 +23935,7 @@ class SourceTableUnderstand(Node):
         self.input_item = item
         create_progress_bar_with_numbers(0, model_steps)
 
-        print(f"{running_spinner_html} Understanding the database ...")
+        print("🤓 Understanding the database ...")
         self.progress = show_progress(1)
 
         data_project = self.para["data_project"]
@@ -24452,7 +24010,7 @@ Return in the following format:
             selected_table = dropdown.value
 
             print("😎 Query submitted. Check out the data widget!")
-            query_widget.run_query(f'SELECT * FROM "{selected_table}"')
+            query_widget.run_query(f"SELECT * FROM {selected_table}")
 
         explore_button.on_click(on_explore_button_clicked)
 
@@ -24529,8 +24087,7 @@ Return in the following format:
         
 
 class Table:
-    def __init__(self, table_name="", table_summary="", columns=None, column_desc=None, missing_acceptable=None, unusualness=None, 
-                 category=None, uniqueness=None, patterns=None, variant=None):
+    def __init__(self, table_name="", table_summary="", columns=None, column_desc=None, missing_acceptable=None, unusualness=None, category=None, uniqueness=None, patterns=None):
         self.table_name = table_name
         self.table_summary = table_summary
         self.columns = columns or []
@@ -24540,59 +24097,43 @@ class Table:
         self.category = category or {}
         self.uniqueness = uniqueness or {}
         self.patterns = patterns or {}
-        self.variant = variant or {}
-        
+    
     def print_category(self):
         category_string = ""
         for column, categories in self.category.items():
             category_string += f"'{column}': {categories}\n"
         return category_string.strip()
     
-    def print_column_desc(self, columns=None, show_category=False, 
-                          show_unique=False, show_pattern=False):
+    def print_column_desc(self, columns=None):
         column_desc_string = ""
         if columns is None:
             columns = self.columns
         for column in columns:
             if column in self.column_desc:
-                desc = self.column_desc.get(column, "") + "\n"
-                
-                if show_category and column in self.category:
+                desc = self.column_desc.get(column, "")
+                if column in self.category:
                     categories = self.category[column]
-                    desc += f"  Column domain: {categories}\n"
-                
-                if show_unique and column in self.uniqueness:
-                    desc += f"  Column is unique: {self.uniqueness[column]}\n"
-                
-                if show_pattern and column in self.patterns:
-                    desc += "   Column has regex patterns:\n"
-                    for pattern in self.patterns[column]:
-                        desc += f"      - {pattern['summary']}: {pattern['regex']}\n"
-                
-                column_desc_string += f"'{column}': {desc}"
+                    desc += f". Domain: {categories}"
+                column_desc_string += f"'{column}': {desc}\n"
         return column_desc_string.strip()
     
-    def create_dbt_schema_dict(self, table_cocoon_meta=None):
-        data = OrderedDict([
-            ("version", 2),
-            ("models", [
-                OrderedDict([
-                    ("name", self.table_name),
-                    ("description", self.table_summary),
-                    ("columns", [])
-                ])
-            ]),
-        ])
-        
-        if table_cocoon_meta is not None:
-            data["cocoon_meta"] = table_cocoon_meta
-            
+    def create_dbt_schema_dict(self):
+        data = {
+            "version": 2,
+            "models": [
+                {
+                    "name": self.table_name,
+                    "description": self.table_summary,
+                    "columns": []
+                }
+            ]
+        }
 
         for column in self.columns:
             columndesc_key = next((key for key in self.column_desc if key.lower() == column.lower()), None)
             description = self.column_desc[columndesc_key] if columndesc_key else ""
             tests = []
-            cocoon_meta = OrderedDict()
+            cocoon_meta = {}
 
             missing_acceptable_key = next((key for key in self.missing_acceptable if key.lower() == column.lower()), None)
             if missing_acceptable_key:
@@ -24616,6 +24157,7 @@ class Table:
                 if unique_reason:
                     tests.append("unique")
                     cocoon_meta["uniqueness"] = unique_reason
+                    
 
             category_key = next((key for key in self.category if key.lower() == column.lower()), None)
             if category_key:
@@ -24626,24 +24168,18 @@ class Table:
                             accepted_values = ast.literal_eval(accepted_values)
                         else:
                             accepted_values = accepted_values.split(",")
-                    tests.append(OrderedDict([("accepted_values", OrderedDict([("values", accepted_values)]))]))
-
+                    tests.append({"accepted_values": {"values": accepted_values}})
+            
             patterns_key = next((key for key in self.patterns if key.lower() == column.lower()), None)
             if patterns_key:
                 patterns = self.patterns[patterns_key]
                 if patterns:
                     cocoon_meta["patterns"] = patterns
                     
-            variant_key = next((key for key in self.variant if key.lower() == column.lower()), None)
-            if variant_key:
-                variant_info = self.variant[variant_key]
-                if variant_info:
-                    cocoon_meta["variant"] = variant_info
-
-            column_data = OrderedDict([
-                ("name", column),
-                ("description", description)
-            ])
+            column_data = {
+                "name": column,
+                "description": description
+            }
 
             if tests:
                 column_data["tests"] = tests
@@ -24657,7 +24193,7 @@ class Table:
     
     def create_dbt_schema_yml(self):
         data = self.create_dbt_schema_dict()
-        yml_content = yaml.dump(data, default_flow_style=False)
+        yml_content = yaml.safe_dump(data, default_flow_style=False)
         return yml_content
     
     def read_attributes_from_dbt_schema_yml(self, yml_data):
@@ -24699,8 +24235,6 @@ class Table:
                     self.uniqueness[column_name] = cocoon_meta['uniqueness']
                 if 'patterns' in cocoon_meta:
                     self.patterns[column_name] = cocoon_meta['patterns']
-                if 'variant' in cocoon_meta:
-                    self.variant[column_name] = cocoon_meta['variant']
                     
                     
     def add_column(self, column_name, description=None, missing_desc=None, unusual_desc=None, categories=None):
@@ -24753,9 +24287,7 @@ class DescribeColumnsListAndTableSummaryNoRename(DescribeColumnsList):
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_pipeline)
-        
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         
         table_summary = self.get_sibling_document('Create Short Table Summary')
         
@@ -24832,8 +24364,7 @@ class DescribeColumnsListAndTableSummary(DescribeColumnsList):
         query_widget = self.item["query_widget"]
 
         create_explore_button(query_widget, table_pipeline)
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         
         table_summary = self.get_sibling_document('Create Short Table Summary')
         
@@ -25013,23 +24544,19 @@ class StageProgress(Node):
             
         def skip_this_workflow():
             table_name = self.para["table_name"]
-            new_table_name = rename_for_stg(table_name)
+            new_table_name = "stg_" + table_name.replace("src_", "")
             
             file_names = [f"{new_table_name}.sql",  f"{new_table_name}.yml",]
             
             if "dbt_directory" in self.para:
-
                 file_names = [os.path.join(self.para["dbt_directory"], "stage", file_name) for file_name in file_names]
             
             if all([os.path.exists(file_name) for file_name in file_names]):
                 with open(file_names[0], "r") as f:
                     sql_query = f.read()
                     con = self.item["con"]
-                    source_step = SQLStep(table_name=table_name, con=con)
                     sql_step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
-                    table_pipeline = TransformationSQLPipeline(steps = [source_step], edges=[])
-                    table_pipeline.add_step_to_final(sql_step)
-                    self.para["table_pipeline"] = table_pipeline
+                    sql_step.run_codes()
                     
                 
                 with open(file_names[1], "r") as f:
@@ -25128,7 +24655,7 @@ class StageSourceTargetProgress(Node):
             
         def skip_this_workflow():
             table_name = self.para["table_name"]
-            new_table_name = rename_for_stg(table_name)
+            new_table_name = "stg_" + table_name.replace("src_", "")
             
             file_names = [f"{new_table_name}.sql",  f"{new_table_name}.yml",]
             
@@ -25140,8 +24667,7 @@ class StageSourceTargetProgress(Node):
                     sql_query = f.read()
                     con = self.item["con"]
                     sql_step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
-                    table_pipeline = TransformationSQLPipeline(steps = [sql_step], edges=[])
-                    self.para["table_pipeline"] = table_pipeline
+                    sql_step.run_codes()
                     
                 
                 with open(file_names[1], "r") as f:
@@ -25232,70 +24758,33 @@ class StageForAll(MultipleNode):
         df["status"] = "✅"
         display(df)
         
-        display(HTML("💯 All the tables are clean! Next, we will integrate the tables ... <br> ⚠️ You need to materialize the tables before proceeding."))
+        display(HTML("💯 All the tables are clean! Next, we will integrate the tables ..."))
 
-        view_button = widgets.Button(description="As View", button_style='info', icon='eye')
-        table_button = widgets.Button(description="As Table", button_style='info', icon='table')
+        submit_button = widgets.Button(description="Next",
+                                       button_style='success',
+                                       icon='check')
+        
         
         data_project = self.para["data_project"]
         data_project.tables = {}
         tables = []
-        
         for node in self.nodes.values():
             table_object = node.para["table_object"]
             table_name = table_object.table_name
             data_project.table_object[table_name] = table_object
             tables.append(table_name)
-        
-        def on_materialize_click(b, mode):
-            display(HTML(f'{running_spinner_html}</i> Creating {mode[5:].lower()}s.'))
-            self.progress = show_progress(len(self.nodes))
             
-            con = self.item["con"]
-            errors = []
-
-            for node_id, node in self.nodes.items():
-                try:
-                    table_pipeline = node.para["table_pipeline"]
-                    table_pipeline.run_codes(con=con, mode=mode)
-                except Exception as e:
-                    error_msg = f"Error processing tadd_tables_with_conable {node.para['table_name']}"
-                    print(error_msg)
-                    traceback.print_exc()
-                finally:
-                    self.progress.value += 1
-            
-            display(HTML(f"Tables materialized as {mode[5:].lower()}s."))
-            
-
-        
-        view_button.on_click(lambda b: on_materialize_click(b, "WITH_VIEW"))
-        table_button.on_click(lambda b: on_materialize_click(b, "WITH_TABLE"))
-        
-        display(widgets.HBox([view_button, table_button]))
-        
-        submit_button = widgets.Button(description="Next", button_style='success', icon='check')
+        con = self.item["con"]
+        data_project.add_tables_with_con(tables, con)
         
         def on_submit_button_click(b):
-            con = self.item["con"] 
-            
-            for table_name in tables:
-                try:
-                    schema = get_table_schema(con, table_name)
-                    if not schema:
-                        print(f"⚠️ Can't read {table_name}")
-                        return
-                    
-                except Exception as e:
-                    print(f"⚠️ Error reading {table_name}: {str(e)}")
-                    return
-                                        
-            data_project.add_tables_with_con(tables, con)
-            callback({})
+            with self.output_context():
+                callback({})
         
         submit_button.on_click(on_submit_button_click)
         display(submit_button)
-        
+
+
 
 
 
@@ -25549,6 +25038,7 @@ def create_cocoon_profile_yml_workflow(con, query_widget=None, viewer=False, tab
     return query_widget, main_workflow
 
 
+
 class DisplayJoinGraph(Node):
     default_name = 'Display Join Graph'
     default_description = 'This displays the join graph'
@@ -25562,25 +25052,39 @@ class DisplayJoinGraph(Node):
         data_project = self.para["data_project"]
         
         data_project.construct_links_from_pk_fk()
-        data_project.display_graph_static()
+        data_project.display_graph()
         yml_content = data_project.join_graph_yaml()
         
-        highlighted_yml = highlight_yml(yml_content)
+        border_style = """
+<style>
+.border-class {
+    border: 1px solid black;
+    padding: 10px;
+    margin: 10px;
+    font-size: 12px;
+}
+</style>
+"""
+        formatter = HtmlFormatter(style='default')
+        css_style = f"<style>{formatter.get_style_defs('.highlight')}</style>"
 
-        display(HTML(highlighted_yml))
+        highlighted_yml = highlight(yml_content, YamlLexer(), formatter)
+
+        bordered_content = f'<div class="border-class">{highlighted_yml}</div>'
+
+        combined_html = css_style + border_style + bordered_content
+
+        display(HTML(combined_html))
         
         labels = ["YAML"]
-        file_names = ["cocoon_join.yml"]
+        file_names = ["cocoon_join_graph.yml"]
         contents = [yml_content]
         
         if "dbt_directory" in self.para:
-            if not os.path.exists(os.path.join(self.para["dbt_directory"], "join")):
-                os.makedirs(os.path.join(self.para["dbt_directory"], "join"))
-            file_names = [os.path.join(self.para["dbt_directory"], "join", file_name) for file_name in file_names]
+            file_names = [os.path.join(self.para["dbt_directory"], "stage", file_name) for file_name in file_names]
        
         overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-        save_files_click(save_button) 
-        
+
         next_button = widgets.Button(description="Next", button_style='success', icon='check')
         
         def on_button_click(b):
@@ -25590,7 +25094,7 @@ class DisplayJoinGraph(Node):
         
         display(HTML("🎉 Next, we will model your data warehouses!"))
         display(next_button)
-
+        
 
 class StartDisplaySteps(Node):
     default_name = 'Product Steps'
@@ -25631,6 +25135,7 @@ class StartDisplaySteps(Node):
         
         
 
+        
 class DecidePKforAll(Node):
     default_name = 'Decide PK for All'
     default_description = 'This decides the PK for all tables'
@@ -25683,7 +25188,6 @@ Return in the following format:
 
     def postprocess(self, run_output, callback, viewer=False, extract_output=None):
 
-        table_unique_columns, table_summarys = extract_output
         table_to_pk_mapping = run_output
         
         self.progress.value += 1
@@ -25702,10 +25206,9 @@ Return in the following format:
         
         for table_name, table_object in data_project.table_object.items():
             data['Table'].append(table_name)
-            
             columns = [""] + table_object.columns
 
-            primary_key = table_to_pk_mapping.get(table_name, "")
+            primary_key = table_to_pk_mapping[table_name]
             
             foreign_keys = [col for col in columns if col.lower().endswith("_id")]
 
@@ -25760,9 +25263,8 @@ Return in the following format:
         display(next_button)
         
         
-        
 class EntityUnderstanding(Node):
-    default_name = 'Entity Understand'
+    default_name = 'Entity  Understand'
     default_description = 'This understands the entity of the tables'
 
     def extract(self, item):
@@ -25773,29 +25275,20 @@ class EntityUnderstanding(Node):
         self.progress = show_progress(1)
 
         data_project = self.para["data_project"]
-        pk_table_column_pairs = list(data_project.foreign_key.keys())
-        
-        pk_table_description = ""
-        for pk_table, pk in pk_table_column_pairs:
-            table_object = data_project.table_object[pk_table]
-            table_summary = table_object.table_summary
-            pk_summary = table_object.print_column_desc(columns=[pk])
-            pk_table_description += f"{pk_table}: {table_summary}\n   Its primary key is '{pk}': {pk_summary}\n"
 
-        return pk_table_column_pairs, pk_table_description
+        return data_project.primary_key
 
     def run(self, extract_output, use_cache=True):
-        pk_table_column_pairs, pk_table_description = extract_output
-
-        template = f"""You have the following tables with primary keys:
-{pk_table_description}
+        primary_key = extract_output
+        table_pk_desc = "\n".join([f"{table}: {pk}" for table, pk in primary_key.items()])
+        
+        template = f"""You have the following table: primary_key
+{table_pk_desc}
 
 Now, for each table with the primary key, choose the name of the entity (e.g., Customers, Orders, Products) that it represents.
 Return in the following format:
 ```yml
-{pk_table_column_pairs[0][0]}:
-    entity_name: ...
-    entity_description: ...
+{next(iter(primary_key))}: Customers
 ...
 ```"""
         messages = [{"role": "user", "content": template}]
@@ -25804,91 +25297,24 @@ Return in the following format:
         self.messages.append(messages)
 
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
+        summary = yaml.safe_load(yml_code)
 
-        for table, data in summary.items():
-            if not isinstance(data, dict):
-                raise TypeError(f"Data for table '{table}' must be a dictionary")
-            if 'entity_name' not in data or 'entity_description' not in data:
-                raise KeyError(f"Data for table '{table}' is missing 'entity_name' or 'entity_description'")
-            if not isinstance(data['entity_name'], str) or not isinstance(data['entity_description'], str):
-                raise TypeError(f"'entity_name' and 'entity_description' for table '{table}' must be strings")
-
-        missing_tables = set(pair[0] for pair in pk_table_column_pairs) - set(summary.keys())
-        if missing_tables:
-            raise ValueError(f"The following tables are missing from the LLM response: {missing_tables}")
-        
         return summary
     
-    def run_but_fail(self, extract_output, use_cache=True):
-        pk_table_column_pairs, pk_table_description = extract_output
-        
-        result = {}
-        for pk_table, pk in pk_table_column_pairs:
-            result[pk_table] = {"entity_name": pk, "entity_description": pk}
-        return result        
-
     def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        pk_table_column_pairs, pk_table_description = extract_output
-        summary = run_output
-        
-        data = {
-            'Table': [],
-            'Primary Key': [],
-            'Entity Name': [],
-            'Entity Description': [],
-        }
-        
-        for  pk_table, pk in pk_table_column_pairs:
-            data['Table'].append(pk_table)
-            data['Primary Key'].append(pk)
-            data['Entity Name'].append(summary[pk_table]["entity_name"])
-            data['Entity Description'].append(summary[pk_table]["entity_description"])
-            
-            
-        df = pd.DataFrame(data)
-        
-        editable_columns = [False, False, True, True]
-        reset = True
-        grid = create_dataframe_grid(df, editable_columns, reset=reset)
-        display(grid)
-        
-        next_button = widgets.Button(description="Next Step", button_style='success', icon='check')
-        
-        def on_button_click(b):
-            df = grid_to_updated_dataframe(grid, reset=reset)
-            document = df.to_json(orient="split")
-            
-            entity_map = {}
-            for idx, row in df.iterrows():
-                entity_map[row['Table']] = row['Entity Name']
-            
-            data_project = self.para["data_project"]
-            data_project.entities = entity_map
-            
-            callback(document)
-        
-        next_button.on_click(on_button_click)
-        display(next_button)
-        
+        data_project = self.para["data_project"]
+        data_project.entities = run_output
+        callback(run_output)
 
 class RelationUnderstandingForAll(MultipleNode):
     default_name = 'Relation Understand For All'
     default_description = 'This understands the relation of the tables'
 
-    def construct_node(self, element_name, idx=0, total=0, entities=None):
-        if entities is None:
-            entities = []
-            
+    def construct_node(self, element_name, idx=0, total=0):
         para = self.para.copy()
         para["table_name"] = element_name
         para["table_idx"] = idx
         para["table_total"] = total
-        para["entities"] = entities
         
         node = RelationUnderstanding(para=para, id_para ="table_name")
         node.inherit(self)
@@ -25896,17 +25322,12 @@ class RelationUnderstandingForAll(MultipleNode):
         return node
 
     def extract(self, item):
-        data_project = self.para["data_project"]
-
-        result = get_table_to_entities_mapping(data_project.foreign_key, data_project.entities)
-
-        for table in data_project.entities:
-            if len(result[table]) == 1:
-                del result[table]
+        pk_df = pd.read_json(self.get_sibling_document('Decide PK for All'), orient="split")
+        pk_df = pk_df[pk_df['Foreign Keys'].apply(lambda x: len(x) > 0)]
         
-        self.elements = list(result.keys())
+        self.elements = list(pk_df['Table'])
         
-        self.nodes = {element: self.construct_node(element, idx, len(self.elements), result[element])
+        self.nodes = {element: self.construct_node(element, idx, len(self.elements))
                       for idx, element in enumerate(self.elements)}
     
     def display_after_finish_workflow(self, callback, document):
@@ -25914,29 +25335,55 @@ class RelationUnderstandingForAll(MultipleNode):
         create_progress_bar_with_numbers(3, model_steps)
         
         data_project = self.para["data_project"]
-        query_widget = self.item["query_widget"]
+        table_to_entity = data_project.entities
         
-        dropdown = create_explore_button(query_widget,
-                                            table_name=list(data_project.table_object.keys()))
-    
-        display(HTML(f"🧐 We have identified <b>Relations</b>:"))
+        display(HTML(f"🧐 We have identified <b>entities</b>:"))
         
         data = {
-            'Table': [],
+            'Table[PK]': [],
+            'Entity Name': [],
+        }
+        
+        for table in table_to_entity:
+            data['Table[PK]'].append(f"{table}[{data_project.primary_key[table]}]")
+            data['Entity Name'].append(table_to_entity[table])
+            
+        df = pd.DataFrame(data)
+        
+        editable_columns = [False, True]
+        reset = True
+        entity_grid = create_dataframe_grid(df, editable_columns, reset=reset)
+        
+        display(entity_grid)
+        
+        display(HTML(f"🧐 Based on the entities, we have identified <b>relations</b>:"))
+        
+        data = {
+            'Table[PK, FK]': [],
             'Entities': [],
             'Relation Name': [],
             'Relation Description': [],
         }
         
+        pk_df = pd.read_json(self.get_sibling_document('Decide PK for All'), orient="split")
+        pk_df = pk_df[pk_df['Foreign Keys'].apply(lambda x: len(x) > 0)]
+        
+        multiplicity = {}
+        participation = {}
+        
         if 'Relation Understand' in document:
             for table in document['Relation Understand']:
-                summary = document['Relation Understand'][table]
-                data['Table'].append(table)
-                data['Entities'].append(summary['entities'])
-                data['Relation Name'].append(summary.get('relation_name', ""))
-                data['Relation Description'].append(summary['relation_desc'])
+                relation = document['Relation Understand'][table]
+                pk = data_project.primary_key[table]
+                fks = pk_df[pk_df['Table'] == table]['Foreign Keys'].values[0]
+                pk_fks = [pk] + fks
+                data['Table[PK, FK]'].append(f"{table}[{', '.join(pk_fks)}]")
+                data['Entities'].append(relation['entities'])
+                data['Relation Name'].append(relation['relation_name'])
+                data['Relation Description'].append(relation['relation_desc'])
                 
-
+                multiplicity[relation['relation_name']] = relation['multiplicity']
+                participation[relation['relation_name']] = relation['participation']
         
         df = pd.DataFrame(data)
         
@@ -25950,48 +25397,131 @@ class RelationUnderstandingForAll(MultipleNode):
         next_button = widgets.Button(description="Next", button_style='success', icon='check')
         
         def on_button_click(b):
-
+            summary = {}
+            
+            entity_df = grid_to_updated_dataframe(entity_grid, reset=reset)
             relation_df = grid_to_updated_dataframe(relation_grid, reset=reset, lists=lists)
-            document = relation_df.to_json(orient="split")
-
-            relation_df = relation_df[relation_df['Relation Name'] != ""]
             
-            duplicate_names = relation_df['Relation Name'][relation_df['Relation Name'].duplicated()].tolist()
+            for idx, row in entity_df.iterrows():
+                table = row['Table[PK]'].split("[")[0]
+                entity = row['Entity Name']
+                data_project.entities[table] = entity
             
-            if duplicate_names:
-                display(HTML("⚠️ Error: Duplicate relation names: " + ", ".join(duplicate_names) + "<br> 😊 Please rename the relations to highlight the difference"))
-                return
+            summary['entities'] = entity_df.to_json(orient="split")
+            summary['relations'] = relation_df.to_json(orient="split")
+            summary['multiplicity'] = multiplicity
+            summary['participation'] = participation
             
-            callback(document)
+            callback(summary)
             
         next_button.on_click(on_button_click)
         display(HTML("🎉 Next, we will build the ER diagram!"))
         display(next_button)
-
         
 
+class RelationUnderstanding(Node):
+    default_name = 'Relation Understand'
+    default_description = 'This understands the relation of the table'
 
+    def extract(self, item):
+        clear_output(wait=True)
         
+        idx = self.para["table_idx"]
+        total = self.para["table_total"]
+        table_name = self.para["table_name"]
+        con = self.item["con"]
 
+        display(HTML(f"🔍 Reading relation in {table_name} ..."))
+        create_progress_bar_with_numbers(3, doc_steps)
 
+        self.input_item = item
 
+        show_progress(max_value=total, value=idx)
 
+        data_project = self.para["data_project"]
+        main_entity = data_project.entities[table_name]
+        
+        fk_unique = {}
+        total_participation = {}
+        
+        pk = data_project.primary_key[table_name]
+        fk_unique[main_entity] = check_column_uniqueness(con, table_name, pk, allow_null=True)
+        total_participation[main_entity] = True
         
         
-        
-        
+        related_entity = set()
+        for pk_table_name, pk in data_project.foreign_key:
+            for fk_table_name, fk in data_project.foreign_key[(pk_table_name, pk)]:
+                if fk_table_name == table_name:
+                    entity = data_project.entities[pk_table_name]
+                    related_entity.add(entity)
                     
+                    fk_unique[entity] = check_column_uniqueness(con, fk_table_name, fk, allow_null=True)
+                    only1, only2, overlap = generate_queries_for_overlap(pk_table_name, [pk], table_name, [fk], con)
+                    total_participation[entity] = (only1 == 0)
                     
+        table_object = data_project.table_object[table_name]
+        table_summary = table_object.table_summary        
+        return main_entity, related_entity, table_summary, fk_unique, total_participation
     
+    def run(self, extract_output, use_cache=True):
+        main_entity, related_entity, table_summary, fk_unique, total_participation = extract_output
         
+        multiplicity_desc = []
+        for entity in fk_unique:
+            if fk_unique[entity]:
+                multiplicity_desc += f"1-1 to {entity}"
+            else:
+                multiplicity_desc += f"1-M to {entity}"
         
+        participation_desc = []
+        for entity in total_participation:
+            if total_participation[entity]:
+                participation_desc += f"{entity} is total"
+            else:
+                participation_desc += f"{entity} is partial"
                 
 
+        template = f"""You have a relation: {table_summary}
         
+It is about {len(related_entity) + 1} entities: '{[main_entity] + list(related_entity)}'
+For multiplicity, the relation is {", ".join(multiplicity_desc)}
+For participation, {", ".join(participation_desc)}
 
+First, describe the relation between the entities:
+(1). Include all entities
+(2). Simple SVO sentence (<10 words)
+(3). Use descriptive words (not just 'relates', 'has', ...)
+Then, pick a name for the relation.
+Next, explain multiplicity and participation.
 
+Return in the following format:
+```yml
+relation_desc: Customer make Order to buy Item
+relation_name: CustomerOrderItem
+multiplicity: 
+    Order: Each Order is uniquely identified by this relation # Relation is 1-1 to Order
+    Customer: Customers can make multiple Orders # Relation is 1-M to Customer
+    Item: Items can be purchased by multiple Orders # Relation is 1-M to Item
+participation:
+    Order: Order is created from this relation # Relation is total to Order
+    Customer: Not every customer makes any Order # Relation is partial to Customer
+    Item: Not every Item is purchased by any Order # Relation is partial to Item
+```"""
+        messages = [{"role": "user", "content": template}]
+        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
+        messages.append(response['choices'][0]['message'])
+        self.messages.append(messages)
 
+        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
+        summary = yaml.safe_load(yml_code)
+        summary['entities'] = [main_entity] + list(related_entity)
+        summary['multiplicity']['cocoon_meta'] = fk_unique
+        summary['participation']['cocoon_meta'] = total_participation
+        return summary
     
+    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
+        callback(run_output)
    
         
 class ReorderRelationToStory(Node):
@@ -26006,33 +25536,25 @@ class ReorderRelationToStory(Node):
 
         self.input_item = item
         
-        relation_df = pd.read_json(self.get_sibling_document('Relation Understand For All'), orient="split")
-        relation_df = relation_df[relation_df['Relation Name'] != ""]
-        
+        relation_df = pd.read_json(self.get_sibling_document('Relation Understand For All')['relations'], orient="split")
         relation_desc = ""
         for idx, row in relation_df.iterrows():
-            relation_desc += f"""'{row['Relation Name']}': 
-    Entity: {', '.join(row['Entities'])}
-    Descriptions: {row['Relation Description']}"""
+            relation_desc += f"'{row['Relation Name']}': {row['Relation Description']}\n"
         
-        return relation_df, relation_desc
+        return relation_desc
     
     def run(self, extract_output, use_cache=True):
-        relation_df, relation_desc = extract_output
+        relation_desc = extract_output
 
         template = f"""For a database, you have the following 'Relation Name': 'Relation Description'
 {relation_desc}
 Now, tell a story using the relations. 
 First, reorder the relations based on the sequence of events. E.g., "Customer opens account" should come before "Customer deposits money".
-Then, modifidy the description for each relation
-(1) Make the story coherent. 
-(2) Be clear about how the entities are related.
-(3) Avoid general terms (e.g., 'relates', 'has', etc)
+Then, modifidy the description to make the story coherent.
 
 Return in the following format:
 ```yml
-reasoning: >
-    The tables are ... The sequence should be ...
+reasoning: The tables are ... The sequence should be ...
 story: # Reorder the relations
     -   relation_name: Relation Name
         relation_desc: short and simple SVO in < 10 words
@@ -26044,41 +25566,12 @@ story: # Reorder the relations
         self.messages.append(messages)
 
         yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-
-        required_keys = ['reasoning', 'story']
-        for key in required_keys:
-            if key not in summary:
-                raise KeyError(f"summary is missing the '{key}' key")
-
-        if not isinstance(summary['reasoning'], str):
-            raise TypeError("summary['reasoning'] must be a string")
-        if not isinstance(summary['story'], list):
-            raise TypeError("summary['story'] must be a list")
-
-        for i, item in enumerate(summary['story']):
-            if not isinstance(item, dict):
-                raise TypeError(f"Item {i} in summary['story'] must be a dictionary")
-            if 'relation_name' not in item or 'relation_desc' not in item:
-                raise KeyError(f"Item {i} in summary['story'] is missing 'relation_name' or 'relation_desc'")
-            if not isinstance(item['relation_name'], str) or not isinstance(item['relation_desc'], str):
-                raise TypeError(f"'relation_name' and 'relation_desc' in item {i} of summary['story'] must be strings")
+        summary = yaml.safe_load(yml_code)
 
         return summary
     
-    def run_but_fail(self, extract_output, use_cache=True):
-        relation_df, relation_desc = extract_output
-        story_list = []
-        for idx, row in relation_df.iterrows():
-            story_list.append({"relation_name": row['Relation Name'], "relation_desc": row['Relation Description']})
-        return {"reasoning": "Fail to run", "story": story_list}
-                
     def postprocess(self, run_output, callback, viewer=False, extract_output=None):
         callback(run_output["story"])
-
 
 
 
@@ -26126,16 +25619,16 @@ def generate_workflow_graph(relation_map, relation_details):
 
 def create_html_content_er_story(relation_map, relation_details, df_display=None, page_no=0):
 
-    list_of_descriptions = '<p>Story behind the relationships <small class="text-muted"> (only for those connect >= 2 entities)</small></p><ol class="small">'
+    list_of_descriptions = "<ol>"
 
     for i in range(page_no):
         entry = relation_details[i]
         relation_name, relation_desc = entry['relation_name'], entry['relation_desc']
-        list_of_descriptions += f"<li>[{relation_name}]: {relation_desc}</li>"
+        list_of_descriptions += f"<li><u>{relation_name}</u>: {relation_desc}</li>"
     
     entry = relation_details[page_no]
     relation_name, relation_desc = entry['relation_name'], entry['relation_desc']
-    list_of_descriptions += f"<li><b>[{relation_name}]: {relation_desc}</b></li>"
+    list_of_descriptions += f"<li><b><u>{relation_name}</u>: {relation_desc}</b></li>"
     list_of_descriptions += "</ol>"
 
     relation_details = relation_details[:page_no+1]
@@ -26170,50 +25663,157 @@ class BuildERStory(Node):
         
         data_project = self.para["data_project"]
         con = self.item["con"]
+        relation_df = pd.read_json(self.get_sibling_document('Relation Understand For All')['relations'], orient="split")
+        entity_df = pd.read_json(self.get_sibling_document('Relation Understand For All')['entities'], orient="split")
+        multiplicity = self.get_sibling_document('Relation Understand For All')['multiplicity']
+        participation = self.get_sibling_document('Relation Understand For All')['participation']
         
-        relation_df = pd.read_json(self.get_sibling_document('Relation Understand For All'), orient="split")
-        entity_df = pd.read_json(self.get_sibling_document('Entity Understand'), orient="split")
-        story_summary = self.get_sibling_document('Reorder Relation To Story')
         
+        labels = []
+        file_names = []
+        contents = []
+        tab_data = []
+        
+        yml_dict = {}
+        yml_dict['entities'] = []
+        yml_dict['relations'] = []
+        
+        for idx, row in entity_df.iterrows():
+            table = row['Table[PK]'].split("[")[0]
+            entity = row['Entity Name']
+            new_table_name = f"entity_{entity}"
+            
+            labels.append(new_table_name)
+            file_names.append(f"entity_{entity}.sql")
+            
+            pk = data_project.primary_key[table]
+            fks = data_project.foreign_key.get((table, pk), [])
+            
+            columns = data_project.table_object[table].columns
+            columns = [col for col in columns if col != pk and col not in fks]
+            columns += [f"{pk} AS {entity}_id"]
+            
+            selection_clause = ',\n'.join(columns)
+            sql_query = f"SELECT \n{indent_paragraph(selection_clause)}\nFROM {table}"
+            step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
+            step.run_codes()
+            contents.append(sql_query)
+            tab_data.append((f"entity_{entity}.sql", highlight_sql(sql_query)))
+            
+            yml_dict['entities'].append({'name': new_table_name, 'key': f"{entity}_id"})
+        
+        df_displays = {}
         relation_to_entities = {}
         for idx, row in relation_df.iterrows():
-            relation_to_entities[row['Relation Name']] = row['Entities']
+            table_name = row['Table[PK, FK]'].split("[")[0]
+            relation_name = row['Relation Name']
+            table_entity = data_project.entities[table_name]
+            relation_desc = row['Relation Description']
+            new_table_name = f"relation_{relation_name}"
+            
+            labels.append(new_table_name)
+            file_names.append(f"relation_{relation_name}.sql")
+            
+            table_pk = data_project.primary_key[table_name]
+            fks = data_project.foreign_key.get((table, table_pk), [])
+            
+            fk_to_entity = {}
+            for pk_table_name, pk in data_project.foreign_key:
+                for fk_table_name, fk in data_project.foreign_key[(pk_table_name, pk)]:
+                    if fk_table_name == table_name:
+                        fk_to_entity[fk] = data_project.entities[pk_table_name]
+                        
+            columns = [f"{table_pk} AS {table_entity}_id"]
+            for fk, entity in fk_to_entity.items():
+                columns.append(f"{fk} AS {entity}_id")
+                
+            selection_clause = ',\n'.join(columns)
+            sql_query = f"SELECT \n{indent_paragraph(selection_clause)}\nFROM {table_name}"
+            step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
+            step.run_codes()
+            contents.append(sql_query)
+            tab_data.append((f"relation_{relation_name}.sql", highlight_sql(sql_query)))
+            relation_to_entities[relation_name] = [table_entity] + list(fk_to_entity.values())
+            
+            data = {
+                'Entity': [],
+                'Multiplicity': [],
+                'Participation': [],
+            }
+            
+            relation_multiplicity = multiplicity[relation_name]
+            multiplicity_cocoon_meta = relation_multiplicity['cocoon_meta']
+            relation_participation = participation[relation_name]
+            participation_cocoon_meta = relation_participation['cocoon_meta']
+            
+            relation_entry = {'name': new_table_name, 
+                              'description': relation_desc,
+                              'entities': []
+                              }
+            
+            for entity in [table_entity] + list(fk_to_entity.values()):
+                entity_entry = {'name': entity}
+                
+                data['Entity'].append(entity)
+                
+                multiplicity_desc = ""
+                if multiplicity_cocoon_meta[entity]:
+                    multiplicity_desc += f"👤 1-1: "
+                    entity_entry['multiple'] = False
+                else:
+                    multiplicity_desc += f"👥 1-M: "
+                    entity_entry['multiple'] = True
+                multiplicity_desc += relation_multiplicity[entity]
+                entity_entry['multiplicity_description'] = relation_multiplicity[entity]
+                data['Multiplicity'].append(multiplicity_desc)
+                
+                participation_desc = ""
+                if participation_cocoon_meta[entity]:
+                    participation_desc += f"🌕 Total: "
+                    entity_entry['total_participation'] = True
+                else:
+                    participation_desc += f"🌗 Partial: "
+                    entity_entry['total_participation'] = False
+                    
+                participation_desc += relation_participation[entity]
+                entity_entry['participation_description'] = relation_participation[entity]
+                data['Participation'].append(participation_desc)
+                
+                relation_entry['entities'].append(entity_entry)
+                
+            yml_dict['relations'].append(relation_entry)
+                
+            df = pd.DataFrame(data)
+            df_displays[relation_name] = df.to_html(index=False)
         
-        relation_story = story_summary
+        new_tables = labels.copy()
+        query_widget = self.item["query_widget"]
+        dropdown =  create_explore_button(query_widget, table_name=new_tables)
         
         display(HTML(f"🥳 We have modeled your data warehouse (oval for entity, box for relation):"))
+        
+        relation_story = self.get_sibling_document('Reorder Relation To Story')
 
+        df_displays_ordered = [df_displays[entry['relation_name']] for entry in relation_story]
         display_pages(total_page=len(relation_story), 
-                      create_html_content=partial(create_html_content_er_story, relation_to_entities, relation_story, None))
+                      create_html_content=partial(create_html_content_er_story, relation_to_entities, relation_story, df_displays_ordered))
         
+        display(HTML("<hr> 💾 Please save the SQL and YML files:"))
         
+        tab_data.append(("YAML", highlight_yml(yaml.dump(yml_dict, default_flow_style=False))))
+        tabs = create_dropdown_with_content(tab_data)
+        display(tabs)
         
-        yml_dict = build_story_yml_dict(relation_df, entity_df, story_summary)
-        yml_content = yaml.dump(yml_dict, default_flow_style=False)
-        
-        highlighted_yml = highlight_yml(yml_content)
-
-        display(HTML(highlighted_yml))
-        
-        labels = ["YAML"]
-        file_names = ["cocoon_er.yml"]
-        contents = [yml_content]
+        labels += ['YAML']
+        file_names += ["cocoon_er_diagram.yml"]
+        contents += [yaml.dump(yml_dict, default_flow_style=False)]
         
         if "dbt_directory" in self.para:
-            if not os.path.exists(os.path.join(self.para["dbt_directory"], "er")):
-                os.makedirs(os.path.join(self.para["dbt_directory"], "er"))
-            file_names = [os.path.join(self.para["dbt_directory"], "er", file_name) for file_name in file_names]
+            file_names = [os.path.join(self.para["dbt_directory"], "model", file_name) for file_name in file_names]
        
         overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-        save_files_click(save_button) 
         
-        next_button = widgets.Button(description="Next", button_style='success', icon='check')
         
-        def on_button_click(b):
-            callback({})
-            
-        next_button.on_click(on_button_click)
-        display(next_button)
 
 
 class DecideDataTypeForAll(MultipleNode):
@@ -26231,8 +25831,7 @@ class DecideDataTypeForAll(MultipleNode):
     
     def extract(self, item):
         table_pipeline = self.para["table_pipeline"]
-        con = self.item["con"]
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         columns = list(schema.keys())
         
         self.elements = columns
@@ -26347,13 +25946,10 @@ class DecideDataTypeSingle(Node):
         database_name = get_database_name(con)
         all_data_types = list(data_types_database[database_name].keys())
         
-        schema = table_pipeline.get_schema(con)
+        schema = table_pipeline.get_final_step().get_schema()
         column_type = get_reverse_type(schema[column_name], database_name)
         
-        query = create_sample_distinct_query(table_pipeline, column_name, sample_size)
-        with_context = table_pipeline.get_codes(mode="WITH")
-        query = with_context + "\n" + query
-        sample_values = run_sql_return_df(con,query)
+        sample_values = create_sample_distinct(con, table_pipeline, column_name, sample_size)
         
         return column_name, column_type, all_data_types, sample_values, column_desc
 
@@ -26432,1668 +26028,3 @@ def build_column_viz(column_name, is_numeric=True, con=None, table_name=None):
 """  
     
     return html_output, javascript_output
-
-
-
-
-
-class DBTProjectConfig(Node):
-    default_name = 'DBT Project Configuration'
-    default_description = 'This step allows you to configure the DBT project.'
-
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        clear_output(wait=True)
-
-        dbt_name_input = widgets.Text(
-            description='Project Name:',
-            value=self.para.get("dbt_name", "My Project"),
-            style={'description_width': 'initial'}
-        )
-
-        dbt_directory_input = widgets.Text(
-            description='Project Directory:',
-            value=self.para.get("dbt_directory", "./dbt_project"),
-            style={'description_width': 'initial'}
-        )
-
-        next_button = widgets.Button(description="Next", button_style='success')
-
-        def on_button_click(b):
-            dbt_name = dbt_name_input.value
-            dbt_directory = dbt_directory_input.value
-
-            self.para["dbt_name"] = dbt_name
-            self.para["dbt_directory"] = os.path.join(dbt_directory, "models")
-
-            callback({
-                "dbt_name": dbt_name,
-                "dbt_directory": dbt_directory
-            })
-
-        next_button.on_click(on_button_click)
-
-        display(HTML("<h3>🛠️ Configure your project</h3>"))
-        display(VBox([dbt_name_input, dbt_directory_input]))
-        display(next_button)
-
-        if viewer or ("viewer" in self.para and self.para["viewer"]):
-            if "dbt_name" in self.para and "dbt_directory" in self.para:
-                on_button_click(next_button)
-            
-
-class DecideSCDTable(Node):
-    default_name = 'Decide SCD Table'
-    default_description = 'This decide if the given table contains SCD'
-
-    def extract(self, item):
-        clear_output(wait=True)
-        self.input_item = item
-        
-        table_name = self.para["element_name"]
-        
-        display(HTML(f'{running_spinner_html} Identifying Slowly Changing Dimensions for <i>{table_name}</i> ...'))
-
-        idx = self.para["idx"]
-        total = self.para["total"]
-        con = self.item["con"]
-        self.progress = show_progress(max_value=total, value=idx)
-
-        
-        table_object =  self.para["data_project"].table_object[table_name]
-        table_desc = table_object.table_summary
-        
-        sample_size = 5
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{table_name}" LIMIT {sample_size}')
-
-        return table_name, table_desc, sample_df
-
-    def run(self, extract_output, use_cache=True):
-        table_name, table_desc, sample_df = extract_output
-
-        template =  f"""You have table '{table_name}': {table_desc}
-        
-Here are its sample rows:
-{sample_df.to_csv(index=False, quoting=1)}
-
-Is the table a slowly changing dimension?
-SCD have different versions of rows to track dimension element changes over time
-It has to be a dimension, not a fact table that tracks aggregates over time.
-
-If so, what are the columns that
-(1) uniquely identify each dimension element
-(2) for each element, identify columns that track its update timestamp/version
-Respond with the following format:
-```yml
-reasoning: >-
-    The table is about ... It is a dimension/fact ...
-    It tracks the versions of ... The columns that track the update timestamp/version are ...
-scd: true/false
-# if scd is true, specify the following
-id_cols: ["col1", "col2"...]
-update_timestamp_cols: ["col1", "col2"...] # preferably, only update time stamp; valid_to is also fine
-```"""
-        messages = [{"role": "user", "content": template}]
-
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-        
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-
-        required_keys = ['reasoning', 'scd']
-        for key in required_keys:
-            if key not in summary:
-                raise KeyError(f"summary is missing required key: {key}")
-
-        if not isinstance(summary['reasoning'], str):
-            raise TypeError("summary['reasoning'] must be a string")
-        if not isinstance(summary['scd'], bool):
-            raise TypeError("summary['scd'] must be a boolean")
-
-        if summary['scd']:
-            for key in ['id_cols', 'update_timestamp_cols']:
-                if key not in summary:
-                    raise KeyError(f"summary is missing required key for SCD: {key}")
-                if not isinstance(summary[key], list):
-                    raise TypeError(f"summary['{key}'] must be a list")
-                if not all(isinstance(col, str) for col in summary[key]):
-                    raise TypeError(f"All elements in summary['{key}'] must be strings")
-
-            all_cols = set(summary['id_cols'] + summary['update_timestamp_cols'])
-            missing_cols = all_cols - set(sample_df.columns)
-            if missing_cols:
-                raise ValueError(f"The following columns are missing from the DataFrame: {missing_cols}")
-            
-        return summary
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        return {
-            "reasoning": "Fail to decide",
-            "scd": False
-        }
-    
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        callback(run_output)
-        
-        
-    
-class DecideSCDForAll(MultipleNode):
-    default_name = 'Decide SCD For All'
-    default_description = 'This decide if the given tables contain SCD'
-
-    def construct_node(self, element_name, idx=0, total=0):
-        para = self.para.copy()
-        para["element_name"] = element_name
-        para["idx"] = idx
-        para["total"] = total
-        node = DecideSCDTable(para=para)
-        node.inherit(self)
-        return node
-
-    def extract(self, item):
-        data_project = self.para["data_project"]
-        self.elements = list(data_project.tables.keys())
-        self.nodes = {element: self.construct_node(element, idx, len(self.elements))
-                      for idx, element in enumerate(self.elements)}
-        self.item = item
-
-    def display_after_finish_workflow(self, callback, document):
-
-        data_project = self.para["data_project"]
-        
-        query_widget = self.item["query_widget"]
-        
-        dropdown = create_explore_button(query_widget, 
-                                         table_name=list(data_project.table_object.keys()))
-        
-        display(HTML("🤓 We have identified slowly changing dimensions. <br> 😎 Slowly changing dimensions are hard to model, so we will get the latest snapshot"))
-        
-        data = {
-            'Table': [],
-            'Is SCD': [],
-            'Version Columns': [],
-            'ID Columns': [],
-        }
-        
-        if "Decide SCD Table" in document:
-            for table in document["Decide SCD Table"]:
-                summary = document["Decide SCD Table"][table]
-                data['Table'].append(table)
-                data['Is SCD'].append(summary["scd"])
-                if summary["scd"]:
-                    data['Version Columns'].append(summary["update_timestamp_cols"])
-                    data['ID Columns'].append(summary["id_cols"])
-                else:
-                    data['Version Columns'].append([])
-                    data['ID Columns'].append([])
-                    
-        df = pd.DataFrame(data)
-        
-        if len(df) == 0:
-            callback(df.to_json(orient="split"))
-            return
-        
-        editable_columns = [False, True, True, True]
-        reset = True
-        editable_list = {
-            'Version Columns': {},
-            'ID Columns':{}
-        }
-        
-        grid = create_dataframe_grid(df, editable_columns, reset=reset,  editable_list=editable_list)
-        display(grid)
-        
-        
-        next_button = widgets.Button(description="Next Step", button_style='success', icon='check')
-
-        def on_button_click(b):
-            df = grid_to_updated_dataframe(grid, reset=reset, editable_list=editable_list)
-            document = df.to_json(orient="split")
-            
-            callback(document)
-
-        next_button.on_click(on_button_click)
-                
-        display(next_button)
-                
-class PerformSCDForAll(MultipleNode):
-    default_name = 'Perform SCD For All'
-    default_description = 'This perform SCD for the given tables'
-    
-    def construct_node(self, element_name, idx=0, total=0, version_columns = None, id_columns = None):
-        
-        para = self.para.copy()
-        para["element_name"] = element_name
-        para["idx"] = idx
-        para["total"] = total
-        para["version_columns"] = version_columns
-        para["id_columns"] = id_columns
-        
-        node = PerformSCDTable(para=para)
-        node.inherit(self)
-        return node
-    
-    def extract(self, item):
-        df = pd.read_json(self.get_sibling_document('Decide SCD For All'), orient="split")
-        
-        scd_tables = df[df['Is SCD'] == True]['Table'].tolist()
-         
-        self.elements = scd_tables
-        self.nodes = {element: self.construct_node(element, idx, len(self.elements), 
-                                                   df[df["Table"] == element]["Version Columns"].iloc[0],
-                                                    df[df["Table"] == element]["ID Columns"].iloc[0])
-                      for idx, element in enumerate(self.elements)}
-        self.item = item
-
-class PerformSCDTable(Node):
-    default_name = 'Perform SCD Table'
-    default_description = 'This perform SCD for the given table'
-
-    def extract(self, item):
-        clear_output(wait=True)
-        self.input_item = item
-        
-        table_name = self.para["element_name"]
-        
-        display(HTML(f'{running_spinner_html} Performing Slowly Changing Dimensions for <i>{table_name}</i> ...'))
-
-        idx = self.para["idx"]
-        total = self.para["total"]
-        con = self.item["con"]
-        self.progress = show_progress(max_value=total, value=idx)
-        
-        version_columns = self.para["version_columns"]
-        id_columns = self.para["id_columns"]
-        
-        sample_size = 5
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{table_name}" LIMIT {sample_size}')
-        
-        data_project = self.para["data_project"]
-        table_object = data_project.table_object[table_name]
-        table_summary = table_object.table_summary
-
-        return table_name, version_columns, id_columns, sample_df, table_summary
-    
-    def run(self, extract_output, use_cache=True):
-        table_name, version_columns, id_columns, sample_df, table_summary = extract_output
-        
-        template =  f"""You have table '{table_name}' with the following sample rows:
-{sample_df.to_csv(index=False, quoting=1)}
-
-Its current summary:
-{table_summary}
-
-This is a slowly changing dimension table.
-The columns that uniquely identify objects are: {id_columns}
-The columns that identify version are: {version_columns}
-
-We are going to create a snapshot table from this table, where 
-(1) only the latest version of each object is kept
-(2) The version columns are removed
-
-Please update the summary of the new table, in short simple SVO sentences and < 500 chars
-Respond with the following format:
-```yml
-new_summary: The table is about ... It tracks the most recent version of ...
-```"""
-        messages = [{"role": "user", "content": template}]
-        
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-        
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-        if 'new_summary' not in summary:
-            raise KeyError("summary is missing the 'new_summary' key")
-        if not isinstance(summary['new_summary'], str):
-            raise TypeError("summary['new_summary'] must be a string")
-        
-        return summary
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        table_name, version_columns, id_columns, sample_df, table_summary = extract_output
-        return {"new_summary": table_summary}
-
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        summary = run_output
-        table_name, version_columns, id_columns, sample_df, table_summary = extract_output
-        
-        labels = []
-        file_names = []
-        contents = []
-        con = self.item["con"]
-        
-        new_table_name = "snapshot_" + table_name.replace("stg_", "")
-        data_project = self.para["data_project"]
-        table_object = data_project.table_object[table_name]
-        columns = table_object.columns
-        
-        version_column_string = ", ".join([f'"{col}"' for col in version_columns])
-        id_column_string = ", ".join([f'"{col}"' for col in id_columns])
-        columns_except_version_string = ",\n".join([f'"{col}"' for col in columns if col not in version_columns])
-        
-        comment = f"""-- Slowly Changing Dimension: Dimension keys are {id_column_string}
--- Effective date columns are {version_column_string}
--- We will create Type 1 SCD (latest snapshot)
-"""
-        sql_query = f"""SELECT 
-{indent_paragraph(columns_except_version_string)}
-FROM (
-     SELECT 
-{indent_paragraph(columns_except_version_string, spaces=12)},
-            ROW_NUMBER() OVER (
-                PARTITION BY {id_column_string} 
-                ORDER BY {version_column_string} 
-            DESC) AS "cocoon_rn"
-    FROM "{table_name}"
-) ranked
-WHERE "cocoon_rn" = 1"""
-        sql_query = comment + sql_query
-
-        labels.append("SQL")
-        file_names.append(f"{new_table_name}.sql")
-        contents.append(sql_query)
-
-        sql_step = SQLStep(table_name=table_name, con=con)
-        
-        table_pipeline = TransformationSQLPipeline(steps = [sql_step], edges=[])
-        step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
-        step.run_codes()
-        table_pipeline.add_step_to_final(step)
-        
-        schema = table_pipeline.get_schema(con)
-        columns = list(schema.keys())
-        
-        table_object.columns = columns
-        table_object.table_name = new_table_name
-        table_object.table_summary = summary["new_summary"]
-        
-        if len(id_columns) == 1:
-            id_column = id_columns[0]
-            table_object.uniqueness[id_column] = "Unique dimension key, derived from the slowly changing dimension"
-        
-        yml_dict = table_object.create_dbt_schema_dict(table_cocoon_meta={"scd_base_table": table_name})
-        yml_content = yaml.dump(yml_dict, default_flow_style=False)
-        labels.append("YML")
-        file_names.append(f"{new_table_name}.yml")
-        contents.append(yml_content)
-
-        if "dbt_directory" in self.para:
-            if not os.path.exists(os.path.join(self.para["dbt_directory"], "snapshot")):
-                os.makedirs(os.path.join(self.para["dbt_directory"], "snapshot"))
-            file_names = [os.path.join(self.para["dbt_directory"], "snapshot", file_name) for file_name in file_names]
-       
-        overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-        overwrite_checkbox.value = True
-        save_files_click(save_button)  
-        
-        data_project.change_table_name(table_name, new_table_name)
-        callback({"sql": sql_query, "yml": yml_content})
-        
-
-class DecideKeysForAll(MultipleNode):
-    default_name = 'Decide Keys For All'
-    default_description = 'This decide keys for the given tables'
-    
-    def construct_node(self, element_name, idx=0, total=0):
-        
-        para = self.para.copy()
-        para["element_name"] = element_name
-        para["idx"] = idx
-        para["total"] = total
-        
-        node = DecideKeysTable(para=para)
-        node.inherit(self)
-        return node
-    
-    def extract(self, item):
-        data_project = self.para["data_project"]
-         
-        self.elements = list(data_project.tables.keys())
-        self.nodes = {element: self.construct_node(element, idx, len(self.elements))
-                      for idx, element in enumerate(self.elements)}
-        self.item = item
-        
-    def display_after_finish_workflow(self, callback, document):
-        
-        query_widget = self.item["query_widget"]
-        
-        dropdown = create_explore_button(query_widget, 
-                                         table_name=self.elements)
-        
-        data = {
-            'Table': [],
-            'Primary Key': [],
-            'Keys': [],
-        }
-        
-        if "Decide Keys Table" in document:
-            for table in document["Decide Keys Table"]:
-                summary = document["Decide Keys Table"][table]
-                data['Table'].append(table)
-                data['Keys'].append(summary["keys"])
-                if summary["pk"] is None:
-                    data['Primary Key'].append("")
-                else:
-                    data['Primary Key'].append(summary["pk"])
-                    
-        df = pd.DataFrame(data)
-        
-        if len(df) == 0:
-            callback(df.to_json(orient="split"))
-            return
-        
-        editable_columns = [False, True, True]
-        reset = True
-        editable_list = {
-            'Keys': {}
-        }
-        
-        grid = create_dataframe_grid(df, editable_columns, reset=reset,  editable_list=editable_list)
-        
-        
-        next_button = widgets.Button(description="Next Step", button_style='success', icon='check')
-
-        def on_button_click(b):
-            df = grid_to_updated_dataframe(grid, reset=reset, editable_list=editable_list)
-            document = df.to_json(orient="split")
-            callback(document)
-
-        next_button.on_click(on_button_click)
-        
-        on_button_click(next_button)
-        
-
-        
-class DecideKeysTable(Node):
-    default_name = 'Decide Keys Table'
-    default_description = 'This decide keys for the given table'
-
-    def extract(self, item):
-        clear_output(wait=True)
-        self.input_item = item
-        
-        table_name = self.para["element_name"]
-        
-        display(HTML(f'{running_spinner_html} Identifying Keys for <i>{table_name}</i> ...'))
-
-        idx = self.para["idx"]
-        total = self.para["total"]
-        con = self.item["con"]
-        self.progress = show_progress(max_value=total, value=idx)
-        
-        sample_size = 5
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{table_name}" LIMIT {sample_size}')
-        
-        data_project = self.para["data_project"]
-        table_object = data_project.table_object[table_name]
-        table_summary = table_object.table_summary
-        column_desc = table_object.print_column_desc(show_category=True, show_unique=True, show_pattern=True)
-
-        return table_name, sample_df, table_summary, column_desc
-    
-    def run(self, extract_output, use_cache=True):
-        table_name, sample_df, table_summary, column_desc = extract_output
-        
-        template =  f"""You have table '{table_name}': {table_summary}
-        
-It has the following sample rows:
-{sample_df.to_csv(index=False, quoting=1)}
-
-Below are the summary of the columns:
-{column_desc}
-
-Task: First, identify the columns that represent keys or ids, potentially for primary or foreign keys.
-These columns could be integers, or strings with some patterns. Please exclude "Date" or "Location" columns.
-Then, identify if there is a primary key for this table, which is a key and unique for each row.
-
-Respond with the following format:
-```yml
-reasoning: >
-    The table is about ...
-keys: 
-    - col1
-    - col2
-pk: col1 # Leave empty if no primary key
-```"""
-
-        messages = [{"role": "user", "content": template}]
-        
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-        
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-        
-        required_keys = ['reasoning', 'keys']
-        for key in required_keys:
-            if key not in summary:
-                raise KeyError(f"summary is missing the '{key}' key")
-        
-        if not isinstance(summary['reasoning'], str):
-            raise TypeError("summary['reasoning'] must be a string")
-        if not isinstance(summary['keys'], list):
-            raise TypeError("summary['keys'] must be a list")
-        if 'pk' in summary and not isinstance(summary['pk'], str) and summary['pk'] is not None:
-            raise TypeError("summary['pk'] must be a string or None")
-
-        for key in summary['keys']:
-            if key not in sample_df.columns:
-                raise ValueError(f"Key '{key}' is not a column in the provided DataFrame")
-
-        if 'pk' in summary and summary['pk'] and summary['pk'] not in sample_df.columns:
-            raise ValueError(f"Primary key '{summary['pk']}' is not a column in the provided DataFrame")
-        
-        return summary
-    
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        table_name, sample_df, table_summary, column_desc = extract_output
-        
-        return {"reasoning": "fail to identify keys",
-                "keys": [],
-                "pk": None }
-    
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        summary = run_output
-        callback(summary) 
-        
-        
-class ConnectPKFKTable(ListNode):
-    default_name = 'Connect PK FK Table'
-    default_description = 'This connect PK FK for the given table'
-
-    def extract(self, item):
-        clear_output(wait=True)
-    
-        display(HTML(f'{running_spinner_html}</i>  Connecting PK FK ...'))
-        
-        
-        data_project = self.para["data_project"]
-
-        key_df = pd.read_json(self.get_sibling_document('Refine Primary Key'), orient="split")
-        database_desc = ""
-        
-        pk_tables = []
-        
-        for idx, row in key_df.iterrows():
-            table_name = row["Table"]
-            keys = row["Keys"]
-            pk = row["Primary Key"]
-            
-            table_object = data_project.table_object[table_name]
-            
-            if len(keys) == 0:
-                continue
-            
-            table_desc = ""
-            
-            if pk != "" and pk is not None:
-                column_desc = f"pk:\n" 
-
-                column_desc += indent_paragraph(table_object.print_column_desc(columns=[pk],
-                                                             show_category=True, 
-                                                             show_unique=False, 
-                                                             show_pattern=True))
-                table_desc += indent_paragraph(column_desc) + "\n"
-                pk_tables.append((pk, table_name))
-                
-            keys = [key for key in keys if key != pk]
-            if len(keys) > 0:
-                column_desc = f"fks:\n"
-                column_desc += indent_paragraph(table_object.print_column_desc(columns=keys,
-                                                             show_category=True, 
-                                                             show_unique=True, 
-                                                             show_pattern=True))
-                table_desc += indent_paragraph(column_desc) + "\n"
-            
-            table_desc = f"{table_name}:\n" + indent_paragraph(table_desc)
-            database_desc += table_desc + "\n"
-            
-        self.progress = show_progress(max_value=len(pk_tables), value=0)
-        outputs = [(pk, table_name, database_desc) for pk, table_name in pk_tables]
-        return outputs
-
-    def run(self, extract_output, use_cache=True):
-        pk, table_name, database_desc = extract_output
-        
-        template =  f"""You have a database, with the following tables and pk/fk:
-{database_desc}
-
-For primary key '{pk}' in table '{table_name}', identify all the foreign keys that reference it.
-The foreign key should be in another table and the column name should be semantically similar. 
-The patterns should also be similar (but not necessarily the same).
-
-Now, respond with the following format:
-```yml
-reasoning: >-
-    The primary key is about ... The referenced foreign keys are ...
-fks: # a list of dicts, that maps table name to column name
-    - fk_table: fk_column
-```"""
-
-        messages = [{"role": "user", "content": template}]
-        
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-        
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-        
-        required_keys = ['reasoning', 'fks']
-        for key in required_keys:
-            if key not in summary:
-                raise KeyError(f"summary is missing the '{key}' key")
-        
-        if not isinstance(summary['reasoning'], str):
-            raise TypeError("summary['reasoning'] must be a string")
-    
-        new_summary = {table_name: {
-            "pk": pk,
-            "fks": summary["fks"]
-        }}
-        
-        if new_summary[table_name]["fks"] is None or not isinstance(new_summary[table_name]["fks"], list):
-            new_summary[table_name]["fks"] = []
-            
-        new_summary[table_name]["fks"] = [fk for fk in new_summary[table_name]["fks"] if isinstance(fk, dict)]
-        
-        
-        for fk in new_summary[table_name]["fks"]:
-            if len(fk) != 1:
-                raise ValueError(f"Each foreign key should be a dictionary with exactly one key-value pair: {fk}")
-            fk_table, fk_column = next(iter(fk.items()))
-            if not isinstance(fk_table, str) or not isinstance(fk_column, str):
-                raise TypeError(f"Foreign key table and column must be strings: {fk}")
-            
-        self.progress.value += 1
-        
-        return new_summary
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        pk, table_name, database_desc = extract_output
-        return {"reasoning": "Fail to run",
-                "fk": []}
-
-    def merge_run_output(self, run_outputs):
-        merged_output = {}
-        for run_output in run_outputs:
-            merged_output.update(run_output)
-        return merged_output
-    
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        self.progress.value += 1
-        data_project = self.para["data_project"]
-        
-        query_widget = self.item["query_widget"]
-        
-        dropdown = create_explore_button(query_widget, 
-                                         table_name=list(data_project.table_object.keys()))
-        
-        summary = run_output
-        
-        data = {
-            'Table[PK]': [],
-            'Table[FK]': [],
-        }
-        
-        for table in summary:
-            data['Table[PK]'].append(f"{table}[{summary[table]['pk']}]")
-            
-            list_of_fks = []
-            if "fks" not in summary[table] or summary[table]["fks"] is None:
-                data['Table[FK]'].append([])
-                continue
-            
-            for fk in summary[table]["fks"]:
-                
-                if fk is None:
-                    continue
-                
-                fk_table = list(fk.keys())[0]
-                fk_column = fk[fk_table]
-                list_of_fks.append(f"{fk_table}[{fk_column}]")
-                
-            data['Table[FK]'].append(list_of_fks)
-            
-        df = pd.DataFrame(data)
-        
-        editable_columns = [False, True]
-        reset = True
-        editable_list = {
-            'Table[FK]': {}
-        }
-        
-        grid = create_dataframe_grid(df, editable_columns, reset=reset,  editable_list=editable_list)
-        
-        display(grid)
-        
-        next_button = widgets.Button(description="Next Step", button_style='success', icon='check')
-        
-        def on_button_click(b):
-            df = grid_to_updated_dataframe(grid, reset=reset, editable_list=editable_list)
-            document = df.to_json(orient="split")
-            
-            for idx, row in df.iterrows():
-                if row['Table[PK]'] == "":
-                    continue
-                
-                pk_table, pk_column = row['Table[PK]'].strip('[]').split('[')
-                
-                for fk in row['Table[FK]']:
-                    fk_table, fk_column = fk.strip('[]').split('[')
-                    data_project.add_foreign_key_to_primary_key(fk_table, fk_column, pk_table, pk_column)
-            
-            callback(document)
-        
-        next_button.on_click(on_button_click)
-        display(next_button)
-        
-        
-
-def get_table_to_entities_mapping(pk_fk_map, primary_table_to_entity):
-    def get_entity_name(table):
-        return primary_table_to_entity.get(table, table)
-
-    table_to_entities = {table: [entity] for table, entity in primary_table_to_entity.items()}
-
-    for (pk_table, _), fk_list in pk_fk_map.items():
-        pk_entity = get_entity_name(pk_table)
-        
-        for (fk_table, _) in fk_list:
-            if fk_table not in table_to_entities:
-                table_to_entities[fk_table] = []
-            
-            if pk_entity not in table_to_entities[fk_table]:
-                table_to_entities[fk_table].append(pk_entity)
-
-    return table_to_entities
-
-
-
-
-class RelationUnderstanding(Node):
-    default_name = 'Relation Understand'
-    default_description = 'This understands the relation of the table'
-
-    def extract(self, item):
-        clear_output(wait=True)
-        
-        idx = self.para["table_idx"]
-        total = self.para["table_total"]
-        table_name = self.para["table_name"]
-        entities = self.para["entities"]
-        con = self.item["con"]
-
-        display(HTML(f'{running_spinner_html} Reading relation in {table_name} ...'))
-        create_progress_bar_with_numbers(3, doc_steps)
-
-        self.input_item = item
-
-        show_progress(max_value=total, value=idx)
-
-        data_project = self.para["data_project"]
-       
-        table_object = data_project.table_object[table_name]
-        table_summary = table_object.table_summary
-        
-        sample_size = 5
-        sample_df = run_sql_return_df(con, f'SELECT * FROM "{table_name}" LIMIT {sample_size}')
-        
-        return table_name, entities, sample_df, table_summary
-    
-    def run(self, extract_output, use_cache=True):
-        table_name, entities, sample_df, table_summary = extract_output
-        
-        more_than_one_entity = len(entities) > 1
-
-        template = f"""You have a table '{table_name}': {table_summary}
-It has the following sample rows:
-{sample_df.to_csv(index=False, quoting=1)}
-
-It is about {len(entities)} entities: '{', '.join(entities)}'
-
-First, describe the relation between the entities:
-(1). Include all entities
-(2). Simple sentence about how they are related (<20 words)
-(3). Be descriptive and specific (not just 'relates', 'has', ...)
-{'Then, pick a name for the relation.' if more_than_one_entity else ''}
-
-Return in the following format:
-```yml
-relation_desc: >-
-    This stores the Items that are ordered by Customers
-{'relation_name: CustomerOrderItems' if more_than_one_entity else ''}
-```"""
-        messages = [{"role": "user", "content": template}]
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        summary['entities'] = entities
-        
-        if not isinstance(summary, dict):
-            raise TypeError("summary must be a dictionary")
-
-        if 'relation_desc' not in summary:
-            raise KeyError("summary is missing the 'relation_desc' key")
-        if not isinstance(summary['relation_desc'], str):
-            raise TypeError("summary['relation_desc'] must be a string")
-
-        if more_than_one_entity:
-            if 'relation_name' not in summary:
-                raise KeyError("summary is missing the 'relation_name' key for multiple entities")
-            if not isinstance(summary['relation_name'], str):
-                raise TypeError("summary['relation_name'] must be a string")
-
-        summary['entities'] = entities
-        
-        return summary
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        table_name, entities, sample_df, table_summary = extract_output
-        return {"relation_desc": table_summary,
-                "relation_name": "".join(entities)}
-
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        callback(run_output)
-        
-
-
-def build_story_yml_dict(relation_df, entity_df, story_summary):
-    yml_dict = OrderedDict()
-
-    yml_dict['entities'] = [
-        OrderedDict([
-            ('entity_name', row['Entity Name']),
-            ('entity_description', row['Entity Description']),
-            ('table_name', row['Table']),
-            ('primary_key', row['Primary Key']),
-
-        ])
-        for _, row in entity_df.iterrows()
-    ]
-
-    yml_dict['relations'] = [
-        OrderedDict([
-            *([('relation_name', row['Relation Name'])] if pd.notna(row['Relation Name']) and row['Relation Name'] != '' else []),
-            ('relation_description', row['Relation Description']),
-            ('table_name', row['Table']),
-            ('entities', row['Entities']),
-
-        ])
-        for _, row in relation_df.iterrows()
-    ]
-
-    yml_dict['story'] = [
-        OrderedDict([
-            ('relation_name', item['relation_name']),
-            ('story_line', item['relation_desc'])
-        ])
-        for item in story_summary
-    ]
-
-    return yml_dict
-
-
-
-
-class DocumentProject(Node):
-    default_name = 'Document Project'
-    default_description = 'This documents the project'
-
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        clear_output(wait=True)
-        
-        display(HTML(f"🥳 We have generated the report!"))
-        
-        dbt_directory = self.para["dbt_directory"]
-        dbt_project_name = self.para["dbt_name"]
-        con = self.item["con"]
-        side_list_idx = 1
-        side_list_html = ""
-        
-        source_tables = []
-        if os.path.exists(os.path.join(dbt_directory, "sources.yml")):
-            with open(os.path.join(dbt_directory, "sources.yml"), "r") as file:
-                sources_yml = yaml.load(file, Loader=yaml.FullLoader)
-            
-            sources = sources_yml["sources"]
-            for source in sources:
-                if source["name"] == "cocoon":
-                    source_tables = source["tables"]
-                    break
-
-        source_choice_html = ""
-        source_div_html = ""
-        if len(source_tables) > 0:
-            for idx, table in enumerate(source_tables):
-                source_choice_html += f'<a class="nav-link small {"active" if idx == 0 else ""}" data-toggle="tab" href="#cocoon_source_{table}">{table}</a>'
-
-            for idx, table in enumerate(source_tables):
-                df_html = run_sql_return_df(con, f'SELECT * FROM "{table}" LIMIT 100').to_html()
-                source_div_html += f"""<div class="tab-pane fade {"show active" if idx == 0 else ""}" id="cocoon_source_{table}">
-            <p class="text-center mb-0">{table} <small class="text-muted">(first 100 rows)</small></p>
-            <div class="code_container mb-4 mx-4">{df_html}</div>
-            </div>"""
-            
-
-            side_list_html += f"""<a class="list-group-item list-group-item-action active" data-toggle="list" href="#cocoon_steps_source">
-                <div>
-                    <h6 class="mb-0">{side_list_idx}. Source</h6>
-                    <small>Initial tables from data warehouses</small>
-                </div>
-            </a>"""
-            side_list_idx += 1
-
-
-
-
-        stage_tables = []
-        
-        if os.path.exists(os.path.join(dbt_directory, "stage")):
-            for file_name in os.listdir(os.path.join(dbt_directory, "stage")):
-                if file_name.endswith(".yml"):
-                    stage_tables.append(file_name[:-4])
-
-        stage_choice_html = ""
-        stage_div_html = ""
-        if len(stage_tables) > 0:
-            for idx, table in enumerate(stage_tables):
-                stage_choice_html += f'<a class="nav-link small {"active" if idx == 0 else ""}" data-toggle="tab" href="#cocoon_stage_{table}">{table}</a>'
-                
-            for idx, table in enumerate(stage_tables):
-                with open(os.path.join(dbt_directory, "stage", f"{table}.yml"), "r") as file:
-                    yml_content = file.read()
-                
-                with open(os.path.join(dbt_directory, "stage", f"{table}.sql"), "r") as file:
-                    sql_content = file.read()
-                
-                df_html = run_sql_return_df(con, f'SELECT * FROM "{table}" LIMIT 100').to_html()
-                
-                stage_div_html += f"""<div class="tab-pane fade {"show active" if idx == 0 else ""}" id="cocoon_stage_{table}">
-            <p class="text-center mb-0">{table} <small class="text-muted">(first 100 rows)</small></p>
-            <div class="code_container mb-4 mx-4">{df_html}</div>
-            
-            <p class="text-center">{table}.sql <small class="text-muted">(clean the table)</small></p>
-            <div class="code_container mb-4 mx-4">
-                <pre><code class="language-sql">{sql_content}</code></pre>
-            </div>
-            <p class="text-center">{table}.yml <small class="text-muted"> (Document the table)</small></p>
-            <div class="code_container mb-4 mx-4">
-                <pre><code class="language-yaml">{yml_content}</code></pre>
-            </div>
-        </div>"""
-            
-            side_list_html += f"""<a class="list-group-item list-group-item-action" data-toggle="list" href="#cocoon_steps_stage">
-            <div>
-                <h6 class="mb-0">{side_list_idx}. Stage</h6>
-                <small>Clean and document the tables</small>
-            </div>
-        </a>"""
-            side_list_idx += 1
-        
-
-
-
-        snapshot_tables = []
-        if os.path.exists(os.path.join(dbt_directory, "snapshot")):
-            for file_name in os.listdir(os.path.join(dbt_directory, "snapshot")):
-                if file_name.endswith(".yml"):
-                    snapshot_tables.append(file_name[:-4])
-                    
-        snapshot_choice_html = ""
-        snapshot_div_html = ""
-
-        if len(snapshot_tables) > 0:
-            for idx, table in enumerate(snapshot_tables):
-                snapshot_choice_html += f'<a class="nav-link small {"active" if idx == 0 else ""}" data-toggle="tab" href="#cocoon_snapshot_{table}">{table}</a>'
-            
-            for idx, table in enumerate(snapshot_tables):
-                with open(os.path.join(dbt_directory, "snapshot", f"{table}.yml"), "r") as file:
-                    yml_content = file.read()
-                
-                with open(os.path.join(dbt_directory, "snapshot", f"{table}.sql"), "r") as file:
-                    sql_content = file.read()
-                
-                df_html = run_sql_return_df(con, f'SELECT * FROM "{table}" LIMIT 100').to_html()
-                
-                snapshot_div_html += f"""<div class="tab-pane fade {"show active" if idx == 0 else ""}" id="cocoon_snapshot_{table}">
-            <p class="text-center mb-0">{table} <small class="text-muted">(first 100 rows)</small></p>
-            <div class="code_container mb-4 mx-4">{df_html}</div>
-            
-            <p class="text-center">{table}.sql <small class="text-muted">(clean the table)</small></p>
-            <div class="code_container mb-4 mx-4">
-                <pre><code class="language-sql">{sql_content}</code></pre>
-            </div>
-            <p class="text-center">{table}.yml <small class="text-muted"> (Document the table)</small></p>
-            <div class="code_container mb-4 mx-4">
-                <pre><code class="language-yaml">{yml_content}</code></pre>
-            </div>
-        </div>"""
-
-            side_list_html += f"""<a class="list-group-item list-group-item-action" data-toggle="list" href="#cocoon_steps_scd">
-            <div>
-                <h6 class="mb-0">{side_list_idx}. SCD Model</h6>
-                <small>Snapshot from the change events</small>
-            </div>
-        </a>"""
-            side_list_idx += 1
-
-
-
-        join_yml_content = ""
-        if os.path.exists(os.path.join(dbt_directory, "join", "cocoon_join.yml")):
-            with open(os.path.join(dbt_directory, "join", "cocoon_join.yml"), "r") as file:
-                join_yml_content = file.read()
-
-        join_yml_dict = yaml.load(join_yml_content, Loader=yaml.FullLoader)
-        foreign_key = reverse_join_graph(join_yml_dict)
-        nodes, edges = generate_nodes_edges(foreign_key)
-        join_graph_output = generate_workflow_html_multiple(nodes, edges, directional=True)
-
-        integration_div_html = f"""<p class="text-center">Join Graph <small class="text-muted">(FK to PK)</small></p>
-        <div class="container mb-4">{join_graph_output}</div>
-        <p class="text-center">cocoon_join.yml <small class="text-muted"> (Document the joins)</small></p>
-        <div class="code_container mb-4 mx-4">
-            <pre><code class="language-yaml">{join_yml_content}</code></pre>
-        </div>"""
-
-        side_list_html += f"""<a class="list-group-item list-group-item-action" data-toggle="list" href="#cocoon_steps_join">
-            <div>
-                <h6 class="mb-0">{side_list_idx}. Integration</h6>
-                <small>Join graph from PK/FK</small>
-            </div>
-        </a>"""
-        side_list_idx += 1
-
-
-
-        er_yml_content = ""
-        if os.path.exists(os.path.join(dbt_directory, "er", "cocoon_er.yml")):
-            with open(os.path.join(dbt_directory, "er", "cocoon_er.yml"), "r") as file:
-                er_yml_content = file.read()
-
-        er_yml_dict = yaml.load(er_yml_content, Loader=yaml.FullLoader)
-        relation_map = {entry['relation_name']: entry['entities'] for entry in er_yml_dict['relations'] if 'relation_name' in entry}
-        relation_details = [{'relation_name': entry['relation_name'], 'relation_desc': entry['story_line']} for entry in er_yml_dict['story']]
-
-        er_list_html = "\n".join([f'<li data-target="#cocoon_er_story_carousel" data-slide-to="{idx}" class="{"" if idx == 0 else ""}"></li>' for idx in range(len(relation_details))])
-        er_carousel_html = "\n".join([f'<div class="carousel-item {"active" if idx == 0 else ""}" style="transition: none;">{create_html_content_er_story(relation_map, relation_details, page_no=idx)}</div>' for idx in range(len(relation_details))])
-        er_div_html = f"""<div class="container">
-            <div id="cocoon_er_story_carousel" class="carousel slide" data-interval="false">
-                <div class="d-flex justify-content-between align-items-center mt-3">
-                    <a class="btn btn-secondary" href="#cocoon_er_story_carousel" role="button"
-                        data-slide="prev">
-                        Prev
-                    </a>
-                    <a class="btn btn-secondary" href="#cocoon_er_story_carousel" role="button"
-                        data-slide="next">
-                        Next
-                    </a>
-                </div>
-                <ol class="carousel-indicators" style="position: relative; bottom: 30px;">
-                    {er_list_html}
-                </ol>
-                <div class="carousel-inner">
-                    {er_carousel_html}
-                </div>
-            </div>
-        </div>
-        <p class="text-center">cocoon_er.yml <small class="text-muted"> (Document the ER model)</small></p>
-        <div class="code_container mb-4 mx-4">
-            <pre><code class="language-yaml">{er_yml_content}</code></pre>
-        </div>"""
-
-        side_list_html += f"""<a class="list-group-item list-group-item-action" data-toggle="list" href="#cocoon_steps_er">
-            <div>
-                <h6 class="mb-0">{side_list_idx}. ER Model</h6>
-                <small>Tell the story behind the tables</small>
-            </div>
-        </a>"""
-        side_list_idx += 1
-
-
-
-
-
-        model_html = f"""<!DOCTYPE html>
-        <html lang="en">
-
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Cocoon - Data Modeling</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/css/bootstrap.min.css"
-                integrity="sha384-TX8t27EcRE3e/ihU7zmQxVncDAy5uIKz4rEkgIXeMed4M0jlfIDPvg6uqKI2xXr2" crossorigin="anonymous">
-            <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"
-                integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj"
-                crossorigin="anonymous"></script>
-            <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/js/bootstrap.bundle.min.js"
-                integrity="sha384-ho+j7jyWK8fNQe+A12Hb8AhRq26LrZ/JpcUGGOn+Y7RsweNrtN/tE3MoK7ZeZDyx"
-                crossorigin="anonymous"></script>
-            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
-            <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-tomorrow.min.css" rel="stylesheet" />
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-sql.min.js"></script>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-yaml.min.js"></script>
-        </head>
-        <style>
-            /* for list-group-item highlight */
-            .list-group-item.active {{
-                background-color: #464646;
-                border-color: #f8f9fa;
-                color: #ffffff;
-            }}
-
-            .list-group-item.active:hover {{
-                background-color: #bebebe;
-                border-color: #e9ecef;
-                color: #ffffff;
-            }}
-
-            /* for nav-link highlight */
-            .nav-link {{
-                color: #6c757d !important;
-                /* Gray color for inactive links */
-            }}
-
-            .nav-link.active {{
-                color: #000 !important;
-                /* Black color for active link */
-            }}
-
-
-        {small_table_style}
-
-        {code_container_style}
-
-            .code_container {{
-                max-height: calc(60vh);
-                overflow: auto;
-            }}
-
-            .code_container pre[class*="language-"] {{
-                border-radius: 4px;
-                padding: 1em;
-                margin: .5em 0;
-                overflow: auto;
-                font-size: 12px;
-            }}
-
-
-            .carousel-indicators li {{
-                background-color: #808080;
-                /* Gray for inactive indicators */
-            }}
-
-            .carousel-indicators .active {{
-                background-color: #000000;
-                /* Black for active indicator */
-            }}
-        </style>
-
-        <body>
-
-
-            <div class="container mt-4">
-                <!-- New row for the header -->
-                <div class="row mb-4">
-                    <div class="col-md-6">
-                        <a href="https://github.com/Cocoon-Data-Transformation/cocoon" target="_blank"
-                            class="text-decoration-none text-dark">
-                            <div class="d-flex align-items-center">
-                                <img src="https://raw.githubusercontent.com/Cocoon-Data-Transformation/cocoon/main/images/cocoon_icon.png"
-                                    alt="cocoon icon" width="40" class="mr-3">
-                                <div>
-                                    <h4 class="mb-0">Cocoon Data Model</h4>
-                                    <small class="mb-0">Note: Cocoon uses LLMs and can make mistakes</small>
-                                </div>
-                            </div>
-                        </a>
-                    </div>
-                    <div class="col-md-6 d-flex align-items-center justify-content-end">
-                        <h2>{dbt_project_name}</h2>
-                    </div>
-                </div>
-
-
-                <div class="row">
-                    <div class="col-md-9">
-                        <div class="card">
-                            <div class="card-body">
-                                <div class="tab-content">
-                                    <div class="tab-pane fade show active" id="cocoon_steps_source">
-
-                                        <nav class="navbar navbar-light bg-light">
-                                            <span class="navbar-brand mb-0">
-                                                <h5 class="card-title mb-0">Source Table</h5>
-                                            </span>
-                                            <ul class="nav">
-                                                <li class="nav-item dropdown">
-                                                    <a class="nav-link dropdown-toggle active" href="#"
-                                                        id="navbarDropdownMenuLink" data-toggle="dropdown" aria-haspopup="true"
-                                                        aria-expanded="false">
-                                                        Select Table
-                                                    </a>
-                                                    <div class="dropdown-menu" aria-labelledby="navbarDropdownMenuLink">
-                                                        {source_choice_html}
-                                                    </div>
-                                                </li>
-                                            </ul>
-                                        </nav>
-                                        <div class="container">
-                                            <small class="text-muted">We display the source tables from the data warehouses to
-                                                model.</small>
-                                        </div>
-                                        <hr>
-                                        <div class="scroll-container overflow-auto">
-                                            <div class="tab-content mt-3">
-                                                {source_div_html}
-                                            </div>
-                                        </div>
-
-                                    </div>
-
-                                    <div class="tab-pane fade" id="cocoon_steps_stage">
-                                        <nav class="navbar navbar-light bg-light">
-                                            <span class="navbar-brand mb-0">
-                                                <h5 class="card-title mb-0">Stage Table</h5>
-                                            </span>
-                                            <ul class="nav">
-                                                <li class="nav-item dropdown">
-                                                    <a class="nav-link dropdown-toggle active" href="#"
-                                                        id="navbarDropdownMenuLink" data-toggle="dropdown" aria-haspopup="true"
-                                                        aria-expanded="false">
-                                                        Select Table
-                                                    </a>
-                                                    <div class="dropdown-menu" aria-labelledby="navbarDropdownMenuLink">
-                                                        {stage_choice_html}
-                                                    </div>
-                                                </li>
-                                            </ul>
-                                        </nav>
-                                        <div class="container">
-                                            <small class="text-muted">Source tables may have typos, unclear names, incorrect
-                                                column types, etc. We clean these tables.</small>
-                                        </div>
-                                        <hr>
-                                        <div class="scroll-container overflow-auto">
-                                            <div class="tab-content mt-3">
-                                            {stage_div_html}
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class="tab-pane fade" id="cocoon_steps_scd">
-                                        <nav class="navbar navbar-light bg-light">
-                                            <span class="navbar-brand mb-0">
-                                                <h5 class="card-title mb-0">Slowly Changing Dimension Model</h5>
-                                            </span>
-                                            <ul class="nav">
-                                                <li class="nav-item dropdown">
-                                                    <a class="nav-link dropdown-toggle active" href="#"
-                                                        id="navbarDropdownMenuLink" data-toggle="dropdown" aria-haspopup="true"
-                                                        aria-expanded="false">
-                                                        Select Table
-                                                    </a>
-                                                    <div class="dropdown-menu" aria-labelledby="navbarDropdownMenuLink">
-                                                        {snapshot_choice_html}
-                                                    </div>
-                                                </li>
-                                            </ul>
-                                        </nav>
-
-                                        <div class="container">
-                                            <small class="text-muted">Some tables log change events, which may be redundant to
-                                                query. Instead, we take a snapshot of the latest.</small>
-                                        </div>
-                                        <hr>
-                                        <div class="scroll-container overflow-auto">
-                                            <div class="tab-content mt-3">
-                                                {snapshot_div_html}
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class="tab-pane fade" id="cocoon_steps_join">
-                                        <nav class="navbar navbar-light bg-light">
-                                            <span class="navbar-brand mb-0">
-                                                <h5 class="card-title mb-0">Integration</h5>
-                                            </span>
-                                        </nav>
-
-                                        <div class="container">
-                                            <small class="text-muted">We identify the primary key (PK) and foreign key (FK) from
-                                                tables. We build a join graph that connects FK to PK.</small>
-                                        </div>
-                                        <hr>
-                                        {integration_div_html}
-                                    </div>
-
-                                    <div class="tab-pane fade" id="cocoon_steps_er">
-                                        <nav class="navbar navbar-light bg-light">
-                                            <span class="navbar-brand mb-0">
-                                                <h5 class="card-title mb-0">Entity–Relationship model</h5>
-                                            </span>
-                                        </nav>
-                                        <div class="container">
-                                            <small class="text-muted">We identify the entities and relationships behind the
-                                                tables, and tell the story among these relationships.</small>
-                                        </div>
-                                        <hr>
-                                        {er_div_html}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                    </div>
-                    <div class="col-md-3">
-                        <div class="list-group" id="myTab" role="tablist">
-                            {side_list_html}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </body>
-
-        </html>"""
-        
-        display(HTML(wrap_in_iframe(model_html, width=1200, height=1200)))
-        labels = ["HTML"]
-        file_names = [os.path.join(dbt_directory, "model.html")]
-        contents = [model_html]
-        overwrite_checkbox, save_button, save_files_click = ask_save_files(labels, file_names, contents)
-        save_files_click(save_button) 
-        
-
-
-def read_data_project_from_dir(directory, con):
-    data_project = DataProject()
-    dbt_directory = os.path.join(directory, "models")
-
-
-    seeds_directory = os.path.join(directory, "seeds") 
-    files = os.listdir(seeds_directory)
-    tables = []
-
-    for file in files:
-        if file.endswith(".csv"):
-            file_path = f"{seeds_directory}/{file}"
-            table_name = file.split(".")[0]
-            table_name = clean_table_name(table_name)
-            df = pd.read_csv(file_path)
-            df.columns = [clean_column_name(col) for col in df.columns]
-            con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM df")
-            tables.append(table_name)
-            
-    source_tables = []
-    if os.path.exists(os.path.join(dbt_directory, "sources.yml")):
-        with open(os.path.join(dbt_directory, "sources.yml"), "r") as file:
-            sources_yml = yaml.load(file, Loader=yaml.FullLoader)
-        
-        sources = sources_yml["sources"]
-        for source in sources:
-            if source["name"] == "cocoon":
-                source_tables = source["tables"]
-                break
-
-    stage_tables = []
-    if os.path.exists(os.path.join(dbt_directory, "stage")):
-        for file_name in os.listdir(os.path.join(dbt_directory, "stage")):
-            if file_name.endswith(".sql"):
-                stage_tables.append(file_name[:-4])
-                
-    for stage_table in stage_tables:
-        new_table_name = stage_table
-        with open(os.path.join(dbt_directory, "stage", f"{stage_table}.sql"), "r") as f:
-            sql_query = f.read()
-            step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
-        
-        with open(os.path.join(dbt_directory, "stage", f"{stage_table}.yml"), "r") as f:
-            table_object = Table()
-            yml_data = yaml.safe_load(f)
-            table_object.read_attributes_from_dbt_schema_yml(yml_data)
-            data_project.add_table_project(table_object)
-            
-    snapshot_tables = []
-    if os.path.exists(os.path.join(dbt_directory, "snapshot")):
-        for file_name in os.listdir(os.path.join(dbt_directory, "snapshot")):
-            if file_name.endswith(".yml"):
-                snapshot_tables.append(file_name[:-4])
-                
-    for snapshot_table in snapshot_tables:
-        new_table_name = snapshot_table
-        with open(os.path.join(dbt_directory, "snapshot", f"{snapshot_table}.sql"), "r") as f:
-            sql_query = f.read()
-            step = SQLStep(table_name=new_table_name, sql_code=sql_query, con=con)
-        
-        with open(os.path.join(dbt_directory, "snapshot", f"{snapshot_table}.yml"), "r") as f:
-            table_object = Table()
-            yml_data = yaml.safe_load(f)
-            table_object.read_attributes_from_dbt_schema_yml(yml_data)
-            data_project.add_table_project(table_object)
-
-    join_yml_content = ""
-    if os.path.exists(os.path.join(dbt_directory, "join", "cocoon_join.yml")):
-        with open(os.path.join(dbt_directory, "join", "cocoon_join.yml"), "r") as file:
-            join_yml_content = file.read()
-
-    data_project.build_foreign_key_from_join_graph_yml(join_yml_content)
-    return data_project
-
-
-class DecideVariantTypes(Node):
-    default_name = 'Decide Variant Types'
-    default_description = 'This allows users to analyze and decide how to handle VARIANT data types in Snowflake.'
-    
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        clear_output(wait=True)
-        if icon_import:
-            display(HTML('''<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css"> '''))
-        display(HTML('{running_spinner_html}</i> Analyzing VARIANT data types ...'))
-        
-        create_progress_bar_with_numbers(0, doc_steps)
-        self.progress = show_progress(1)
-        con = self.item["con"]
-        table_pipeline = self.para["table_pipeline"]
-        database_name = get_database_name(con)
-        if database_name != "Snowflake":
-            callback({})
-        schema = table_pipeline.get_schema(con)
-        columns = list(schema.keys())
-        variant_columns = []
-        
-        for col in columns:
-            if get_reverse_type(schema[col], database_name) == 'VARIANT':
-                variant_columns.append(col)
-        if not variant_columns:
-            callback({})
-            
-        document = {}
-        with_context = table_pipeline.get_codes(mode="WITH")
-        
-        for col in variant_columns:
-            document[col] = OrderedDict()
-            
-            query = f"""
-            SELECT 
-                TYPEOF(t."{col}") as DATA_TYPE,
-                COUNT(*) as TYPE_COUNT
-            FROM 
-                "{table_pipeline}" t
-            GROUP BY 
-                TYPEOF(t."{col}")
-            ORDER BY 
-                TYPE_COUNT DESC"""
-            
-            query = with_context + query
-            result_df = run_sql_return_df(con, query)
-            document[col]["variant_types"] = result_df['DATA_TYPE'].tolist()
-            
-            if 'OBJECT' in document[col]["variant_types"]:
-                unique_keys_query = f"""
-                SELECT COUNT(DISTINCT f.VALUE) AS UNIQUE_KEY_COUNT
-                FROM "{table_pipeline}" t,
-                LATERAL FLATTEN(OBJECT_KEYS(t."{col}")) f
-                WHERE IS_OBJECT(t."{col}")
-                """
-                unique_keys_query = with_context + unique_keys_query
-                unique_keys_result = run_sql_return_df(con, unique_keys_query)
-                unique_key_count = unique_keys_result['UNIQUE_KEY_COUNT'].iloc[0]
-                
-                if unique_key_count <= 100:
-                    keys_query = f"""
-                    SELECT DISTINCT f.VALUE::VARCHAR as KEY
-                    FROM "{table_pipeline}" t,
-                    LATERAL FLATTEN(OBJECT_KEYS(t."{col}")) f
-                    WHERE IS_OBJECT(t."{col}")
-                    """
-                    keys_query = with_context + keys_query
-                    keys_result = run_sql_return_df(con, keys_query)
-                    
-                    document[col]["object_keys"] = keys_result['KEY'].tolist()
-        
-        table_object = self.para["table_object"]
-        table_object.variant = document
-        callback(document)
-        
-def rename_for_stg(old_table_name):
-    return "stg_" + old_table_name.replace("src_", "")
-
-
-
-
-class RefinePK(Node):
-    default_name = 'Refine Primary Key'
-    default_description = 'This node refines the primary key for the given table'
-    
-    def extract(self, item):
-        clear_output(wait=True)
-
-        create_progress_bar_with_numbers(2, model_steps)
-        display(HTML(f'{running_spinner_html} Identifying Keys ...'))
-        
-        key_df = pd.read_json(self.get_sibling_document('Decide Keys For All'), orient="split")
-        
-        pk_df = key_df[key_df['Primary Key'] != ""]
-
-        data_project = self.para["data_project"]
-        
-        pk_table_description = ""
-        for idx, row in pk_df.iterrows():
-            table = row['Table']
-            pk = row['Primary Key']
-            table_object = data_project.table_object[table]
-            table_summary = table_object.table_summary
-            pk_table_description += f"{table}: {table_summary}\n   Potential primary key: '{pk}'\n"
-        
-        return key_df, pk_table_description
-    
-    def run(self, extract_output, use_cache=True):
-        _, pk_table_description = extract_output
-        
-        template = f"""You have the following tables with potential primary keys:
-{pk_table_description}
-
-Now, identify duplicated primary keys between tables.
-Duplicated primary keys are those with similar names.
-E.g., 'UserInformation' and 'UserAddress' can both have 'UserID' as primary key.
-In such cases, choose only the most important table to be the primary key table (e.g., 'UserInformation').
-And make the rest keys in other tables foreign key to the primary key.
-
-Return in the following format:
-```yml
-reasoning: >-
-    The primary keys of X are duplicated... Only the 
-
-pk_mapping:
-    table_name: primary_key # leave empty if not primary key
-    ...
-```"""
-        messages = [{"role": "user", "content": template}]
-        response =  call_llm_chat(messages, temperature=0.1, top_p=0.1, use_cache=use_cache)
-        messages.append(response['choices'][0]['message'])
-        self.messages.append(messages)
-
-        yml_code = extract_yml_code(response['choices'][0]['message']["content"])
-        summary = yaml.load(yml_code, Loader=yaml.SafeLoader)
-        
-        return summary
-    
-    def run_but_fail(self, extract_output, use_cache=True):
-        key_df, pk_table_description = extract_output
-        
-        mapping = {}
-        for idx, row in pk_df.iterrows():
-            table = row['Table']
-            pk = row['Primary Key']
-            mapping[table] = pk
-        
-        return {"reasoning": "Fail to run.",
-                "pk_mapping": mapping}
-
-
-    def postprocess(self, run_output, callback, viewer=False, extract_output=None):
-        
-        df = extract_output[0]
-        summary = run_output
-              
-        data_project = self.para["data_project"]
-        
-        query_widget = self.item["query_widget"]
-        
-        dropdown = create_explore_button(query_widget, 
-                                         table_name=list(data_project.table_object.keys()))
-        
-        if len(df) == 0:
-            callback(df.to_json(orient="split"))
-            return
-        
-        df['Primary Key'] = ""
-        for table, pk in summary['pk_mapping'].items():
-            if pk != "" and pk is not None:
-                df.loc[df['Table'] == table, 'Primary Key'] = pk
-        
-        editable_columns = [False, True, True]
-        reset = True
-        editable_list = {
-            'Keys': {}
-        }
-        
-        grid = create_dataframe_grid(df, editable_columns, reset=reset,  editable_list=editable_list)
-        
-        
-        next_button = widgets.Button(description="Next Step", button_style='success', icon='check')
-
-        def on_button_click(b):
-            df = grid_to_updated_dataframe(grid, reset=reset, editable_list=editable_list)
-            document = df.to_json(orient="split")
-            
-            callback(document)
-
-        next_button.on_click(on_button_click)
-        
-        
-        display(HTML("🤓 We have identified keys for the tables"))
-        display(grid)
-        display(next_button)
